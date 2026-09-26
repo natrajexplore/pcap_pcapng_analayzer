@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+# generated artifacts
+packetlens-demo.*
+*.packetlens.json
+reports/
+samples/*.pcap
+samples/*.pcapng

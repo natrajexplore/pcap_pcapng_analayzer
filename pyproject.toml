@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "packetlens"
+version = "1.0.0"
+description = "Modern pcap/pcapng network analyzer with cross-protocol root-cause correlation, per-perspective explanations and remediation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+keywords = ["pcap", "pcapng", "wireshark", "network", "tcp", "dns", "dhcp", "bgp", "ospf", "eigrp", "rip", "troubleshooting"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking :: Monitoring",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+]
+
+[project.scripts]
+packetlens = "packetlens.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["packetlens*"]
+
+[tool.setuptools.package-data]
+"packetlens.report" = ["template.html"]

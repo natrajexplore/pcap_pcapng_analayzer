@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketLens Report</title>
+<style>
+:root{
+  color-scheme: light;
+  --page:#f9f9f7; --surface:#fcfcfb; --surface-2:#f0efec; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10); --accent:#2a78d6; --accent-ink:#fff;
+  --series-1:#2a78d6;
+  --crit:#d03b3b; --high:#ec835a; --med:#fab219; --low:#2a78d6; --info:#898781; --good:#0ca30c;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* packet colouring (after Chris Greer's TCP/ThreatHunt profiles) */
+  --c-bad-bg:#121212; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#121212; --c-icmperr-fg:#b7f28a;
+  --c-rst-bg:#f4c7c3; --c-syn-bg:#c9f2c0; --c-fin-bg:#c7dcff; --c-tls-bg:#c8f6f1; --c-http-bg:#e2fbd3;
+  --c-dns-bg:#fff0cc; --c-dnswarn-bg:#ffd9a0; --c-dnserr-bg:#ffb3b3; --c-arp-bg:#faf0d7; --c-icmp-bg:#fce0ff;
+  --c-routing-bg:#fff4d6; --c-tcp-bg:#ecebff; --c-udp-bg:#dcf1ff; --c-bcast-bg:#e6e6e6; --c-cks-bg:#f7c6c6;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --accent:#3987e5; --series-1:#3987e5; --low:#3987e5;
+    --c-bad-bg:#000; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#000; --c-icmperr-fg:#9be36b;
+    --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-http-bg:#22331a;
+    --c-dns-bg:#3a3117; --c-dnswarn-bg:#4a3413; --c-dnserr-bg:#4d1d1d; --c-arp-bg:#34301f; --c-icmp-bg:#3a2340;
+    --c-routing-bg:#383119; --c-tcp-bg:#25243b; --c-udp-bg:#172b3a; --c-bcast-bg:#2c2c2c; --c-cks-bg:#4d2020;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --accent:#3987e5; --series-1:#3987e5; --low:#3987e5;
+  --c-bad-bg:#000; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#000; --c-icmperr-fg:#9be36b;
+  --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-http-bg:#22331a;
+  --c-dns-bg:#3a3117; --c-dnswarn-bg:#4a3413; --c-dnserr-bg:#4d1d1d; --c-arp-bg:#34301f; --c-icmp-bg:#3a2340;
+  --c-routing-bg:#383119; --c-tcp-bg:#25243b; --c-udp-bg:#172b3a; --c-bcast-bg:#2c2c2c; --c-cks-bg:#4d2020;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--border)}
+.bar{display:flex;align-items:center;gap:12px;padding:10px 16px;max-width:1500px;margin:0 auto;flex-wrap:wrap}
+.brand{font-weight:700;font-size:16px;letter-spacing:.2px}
+.brand small{font-weight:400;color:var(--ink-2);margin-left:8px}
+.spacer{flex:1}
+button,.btn{font:inherit;border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--axis)}
+nav.tabs{display:flex;gap:2px;overflow-x:auto;padding:0 16px;max-width:1500px;margin:0 auto}
+nav.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:10px 12px;color:var(--ink-2);white-space:nowrap}
+nav.tabs button.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+main{max-width:1500px;margin:0 auto;padding:16px}
+section.tab{display:none} section.tab.on{display:block}
+a{color:var(--accent)}
+h2{font-size:18px;margin:20px 0 10px} h3{font-size:15px;margin:14px 0 8px}
+.grid{display:grid;gap:12px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0}
+.tile .v{font-size:26px;font-weight:650}
+.tile .k{color:var(--ink-2);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.muted{color:var(--ink-2)} .small{font-size:12px}
+.mono{font-family:var(--mono);font-size:12.5px}
+.sev{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.sev::before{content:"";width:10px;height:10px;border-radius:3px;background:var(--c)}
+.sev.critical{--c:var(--crit)} .sev.high{--c:var(--high)} .sev.medium{--c:var(--med)} .sev.low{--c:var(--low)} .sev.info{--c:var(--info)}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--border);background:var(--surface-2);font-size:12px;color:var(--ink-2);margin:0 4px 4px 0}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-size:12px;color:var(--ink-2);font-weight:600;position:sticky;top:0;background:var(--surface);cursor:pointer;user-select:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tablewrap{overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+tr.click{cursor:pointer} tr.click:hover td{background:var(--surface-2)}
+input[type=search],select{font:inherit;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.filters input[type=search]{flex:1;min-width:200px}
+/* root causes */
+.rc{border-left:4px solid var(--c);}
+.rc.critical{--c:var(--crit)} .rc.high{--c:var(--high)} .rc.medium{--c:var(--med)} .rc.low{--c:var(--low)} .rc.info{--c:var(--info)}
+.rc h3{margin:6px 0 4px;font-size:16px}
+.verdict{font-weight:600;margin:6px 0}
+.chain{list-style:none;margin:10px 0;padding:0;position:relative}
+.chain li{position:relative;padding:4px 0 10px 26px}
+.chain li::before{content:"";position:absolute;left:7px;top:10px;width:9px;height:9px;border-radius:50%;background:var(--c,var(--accent))}
+.chain li::after{content:"";position:absolute;left:11px;top:22px;bottom:-2px;width:1px;background:var(--axis)}
+.chain li:last-child::after{display:none}
+.persp{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:8px}
+.persp div{background:var(--surface-2);border-radius:8px;padding:8px 10px;font-size:13px}
+.persp b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--ink-2);margin-bottom:2px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+ul.tight{margin:4px 0;padding-left:18px} ul.tight li{margin:2px 0}
+details.f{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
+details.f summary{list-style:none;cursor:pointer;padding:10px 14px;display:grid;grid-template-columns:110px 1fr auto;gap:10px;align-items:start}
+details.f summary::-webkit-details-marker{display:none}
+details.f[open] summary{border-bottom:1px solid var(--grid)}
+details.f .body{padding:10px 14px}
+.filterbox{display:flex;gap:6px;align-items:center;background:var(--surface-2);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:12.5px;overflow-x:auto}
+.pkt{cursor:pointer}
+.pkt td{padding:2px 8px;font-family:var(--mono);font-size:12px;white-space:nowrap;border-bottom:none}
+.pkt.bad_tcp td{background:var(--c-bad-bg);color:var(--c-bad-fg)} .pkt.icmp_error td{background:var(--c-icmperr-bg);color:var(--c-icmperr-fg)}
+.pkt.rst td{background:var(--c-rst-bg)} .pkt.syn td{background:var(--c-syn-bg)} .pkt.fin td{background:var(--c-fin-bg)}
+.pkt.tls td{background:var(--c-tls-bg)} .pkt.http td{background:var(--c-http-bg)} .pkt.dns td{background:var(--c-dns-bg)}
+.pkt.dns_warn td{background:var(--c-dnswarn-bg)} .pkt.dns_error td{background:var(--c-dnserr-bg)} .pkt.arp td{background:var(--c-arp-bg)}
+.pkt.icmp td{background:var(--c-icmp-bg)} .pkt.routing td{background:var(--c-routing-bg)} .pkt.tcp td{background:var(--c-tcp-bg)}
+.pkt.udp td{background:var(--c-udp-bg)} .pkt.broadcast td{background:var(--c-bcast-bg)} .pkt.checksum td{background:var(--c-cks-bg)}
+.pkt.sel td{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--accent)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin:6px 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.hbar{display:grid;grid-template-columns:140px 1fr 70px;gap:8px;align-items:center;margin:3px 0;font-size:13px}
+.hbar .track{height:12px;background:transparent;border-radius:4px;position:relative}
+.hbar .fill{height:12px;background:var(--series-1);border-radius:0 4px 4px 0;min-width:2px}
+.health{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.meter{height:8px;background:var(--surface-2);border-radius:4px;overflow:hidden;margin-top:6px}
+.meter>div{height:100%;border-radius:0 4px 4px 0}
+svg text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+#tip{position:fixed;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12px;box-shadow:0 4px 18px rgba(0,0,0,.18);display:none;z-index:20;max-width:340px}
+.ladderwrap{overflow:auto;max-height:75vh;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-size:13px}
+.kv b{color:var(--ink-2);font-weight:500}
+.empty{padding:24px;text-align:center;color:var(--ink-2)}
+.warn{background:var(--surface-2);border-left:3px solid var(--med);padding:8px 12px;border-radius:6px;margin:8px 0}
+@media (max-width:640px){ details.f summary{grid-template-columns:1fr} .hbar{grid-template-columns:90px 1fr 50px} main{padding:12px 16px} }
+@media print{ header{position:static} nav.tabs{display:none} section.tab{display:block!important;page-break-before:always} }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">PacketLens <small id="hdr-src"></small></div>
+    <div class="spacer"></div>
+    <button id="btn-json" title="Download analysis as JSON">JSON</button>
+    <button id="btn-theme" title="Toggle light/dark">Theme</button>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+<main id="main"></main>
+<div id="tip"></div>
+<script id="pl-data" type="application/json">__PACKETLENS_DATA__</script>
+<script>
+(function(){
+"use strict";
+const D = JSON.parse(document.getElementById("pl-data").textContent);
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtB = n => n>=1e9?(n/1e9).toFixed(2)+" GB":n>=1e6?(n/1e6).toFixed(2)+" MB":n>=1e3?(n/1e3).toFixed(1)+" KB":n+" B";
+const fmtBps = n => n>=1e9?(n/1e9).toFixed(2)+" Gbps":n>=1e6?(n/1e6).toFixed(2)+" Mbps":n>=1e3?(n/1e3).toFixed(1)+" kbps":n+" bps";
+const fmtS = s => s==null?"—":s>=1?s.toFixed(3)+" s":(s*1000).toFixed(1)+" ms";
+const ms = v => v==null?"—":v.toFixed(v<10?2:0)+" ms";
+const SEV = ["critical","high","medium","low","info"];
+const sev = s => `<span class="sev ${s}">${s}</span>`;
+const tip = $("#tip");
+function showTip(e, html){ tip.innerHTML = html; tip.style.display="block"; const x=Math.min(e.clientX+14, innerWidth-tip.offsetWidth-8); tip.style.left=x+"px"; tip.style.top=(e.clientY+14)+"px"; }
+function hideTip(){ tip.style.display="none"; }
+function store(k,v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){ return null; } }
+
+/* ---------- theme ---------- */
+const savedTheme = store("pl-theme"); if(savedTheme) document.documentElement.dataset.theme = savedTheme;
+$("#btn-theme").onclick = () => { const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");
+  const nx = cur==="dark"?"light":"dark"; document.documentElement.dataset.theme = nx; store("pl-theme", nx); };
+$("#btn-json").onclick = () => { const b = new Blob([JSON.stringify(D,null,1)],{type:"application/json"}); const a=document.createElement("a");
+  a.href=URL.createObjectURL(b); a.download=(D.meta.source||"capture")+".packetlens.json"; a.click(); };
+$("#hdr-src").textContent = `${D.meta.source} · ${D.stats.packets.toLocaleString()} packets · v${D.meta.version}`;
+
+/* ---------- tabs ---------- */
+const TABS = [["overview","Overview"],["rootcause","Root causes ("+D.root_causes.length+")"],["findings","Findings ("+D.findings.length+")"],
+  ["tcp","TCP streams ("+D.streams.length+")"],["app","DNS · DHCP"],["web","Web · URLs · TLS"],["routing","Routing"],
+  ["packets","Packets"],["conv","Conversations · Endpoints"]];
+const nav = $("#tabs"), main = $("#main");
+TABS.forEach(([id,label])=>{ const b=document.createElement("button"); b.textContent=label; b.dataset.tab=id; b.onclick=()=>show(id); nav.appendChild(b);
+  const s=document.createElement("section"); s.className="tab"; s.id="tab-"+id; main.appendChild(s); });
+const rendered = {};
+function show(id, then){ document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===id));
+  document.querySelectorAll("section.tab").forEach(s=>s.classList.toggle("on", s.id==="tab-"+id));
+  if(!rendered[id]){ R[id]($("#tab-"+id)); rendered[id]=true; } store("pl-tab", id); if(then) then(); }
+window.plGoPacket = no => show("packets", ()=>selectPacket(no, true));
+window.plGoStream = id => show("tcp", ()=>openStream(id));
+const pkLink = no => no==null?"":`<a href="#" class="mono" onclick="plGoPacket(${no});return false">#${no}</a>`;
+
+/* ---------- overview ---------- */
+const R = {};
+R.overview = el => {
+  const S = D.stats, H = S.health;
+  const hcol = v => v>=85?"var(--good)":v>=60?"var(--med)":v>=35?"var(--high)":"var(--crit)";
+  const hlab = v => v>=85?"Healthy":v>=60?"Degraded":v>=35?"Impaired":"Critical";
+  const sevCounts = SEV.map(s=>`<div class="card tile"><div class="k">${sev(s)}</div><div class="v">${S.severity[s]||0}</div></div>`).join("");
+  el.innerHTML = `
+  <div class="grid g4">
+    <div class="card tile"><div class="k">Packets</div><div class="v">${S.packets.toLocaleString()}</div><div class="muted small">${S.avg_pps} pkt/s avg</div></div>
+    <div class="card tile"><div class="k">Bytes</div><div class="v">${fmtB(S.bytes)}</div><div class="muted small">${fmtBps(S.avg_bps)} avg</div></div>
+    <div class="card tile"><div class="k">Duration</div><div class="v">${fmtS(S.duration)}</div><div class="muted small">${S.start?new Date(S.start*1000).toISOString().replace("T"," ").slice(0,19)+" UTC":""}</div></div>
+    <div class="card tile"><div class="k">TCP streams · conversations</div><div class="v">${S.tcp_streams} · ${S.conversations}</div><div class="muted small">analysed in ${D.meta.analysis_seconds}s</div></div>
+  </div>
+  ${D.meta.warnings.length?`<div class="warn">${D.meta.warnings.map(esc).join("<br>")}</div>`:""}
+  <h2>Network health</h2>
+  <div class="card"><div class="health">
+    ${["overall","Transport","Network","Routing","Application","Security"].map(k=>`<div><div class="small muted">${k==="overall"?"Overall":k}</div>
+      <div style="font-size:22px;font-weight:650">${H[k]}<span class="small muted"> /100 · ${hlab(H[k])}</span></div>
+      <div class="meter" role="img" aria-label="${k} health ${H[k]} of 100"><div style="width:${H[k]}%;background:${hcol(H[k])}"></div></div></div>`).join("")}
+  </div>${D.meta.capture_point?`<p class="small muted" style="margin:10px 0 0">Capture point: ${esc(D.meta.capture_point)}</p>`:""}</div>
+  <h2>Findings by severity</h2><div class="grid g4">${sevCounts}</div>
+  <h2>Top root causes</h2>
+  <div class="grid">${D.root_causes.slice(0,4).map(r=>`<div class="card rc ${r.severity}"><div>${sev(r.severity)} <span class="chip">${esc(r.fault_domain)}</span><span class="chip">confidence ${Math.round(r.confidence*100)}%</span></div>
+    <h3>${esc(r.title)}</h3><div class="muted">${esc(r.verdict)}</div></div>`).join("") || '<div class="card empty">No correlated root causes — the capture looks healthy.</div>'}
+    ${D.root_causes.length>4?`<div><button onclick="document.querySelector('[data-tab=rootcause]').click()">See all ${D.root_causes.length} root causes →</button></div>`:""}</div>
+  <h2>Traffic over time</h2>
+  <div class="card"><div class="legend"><span><i style="background:var(--series-1)"></i>Packets per interval</span><span><i style="background:var(--crit)"></i>Problem packets (Bad TCP / ICMP errors)</span></div>
+    <div id="timeline"></div></div>
+  <div class="grid g2" style="margin-top:12px">
+    <div class="card"><h3 style="margin-top:0">Protocols (highest decoded layer)</h3><div id="protos"></div></div>
+    <div class="card"><h3 style="margin-top:0">Protocol hierarchy (packets containing layer)</h3><div id="layers"></div></div>
+  </div>`;
+  hbars($("#protos",el), S.protocols.slice(0,14));
+  hbars($("#layers",el), S.layers.slice(0,14));
+  timeline($("#timeline",el), S.timeline);
+};
+function hbars(el, rows){ const max = Math.max(1,...rows.map(r=>r[1]));
+  el.innerHTML = rows.map(([k,v])=>`<div class="hbar" data-k="${esc(k)}" data-v="${v}"><span class="mono" title="${esc(k)}" style="overflow:hidden;text-overflow:ellipsis">${esc(k)}</span>
+    <div class="track"><div class="fill" style="width:${v/max*100}%"></div></div><span class="num muted small" style="text-align:right">${v.toLocaleString()}</span></div>`).join("");
+  el.querySelectorAll(".hbar").forEach(h=>{ h.onmousemove=e=>showTip(e,`<b>${esc(h.dataset.k)}</b><br>${Number(h.dataset.v).toLocaleString()} packets`); h.onmouseleave=hideTip; });
+}
+function timeline(el, tl){
+  const W = Math.max(320, el.clientWidth||900), Hh = 180, pl=44, pb=24, pt=8, n=tl.length;
+  const max = Math.max(1,...tl.map(b=>b.pkts)); const bw = (W-pl-8)/n; const gap = bw>6?2:0.5;
+  const y = v => pt + (Hh-pt-pb)*(1-v/max);
+  const ticks = [0, max/2, max].map(v=>Math.round(v));
+  let s = `<svg width="100%" viewBox="0 0 ${W} ${Hh}" role="img" aria-label="Packets over time">`;
+  ticks.forEach(t=>{ s+=`<line x1="${pl}" x2="${W-8}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)"/><text x="${pl-6}" y="${y(t)+4}" text-anchor="end" font-size="11" fill="var(--muted)">${t}</text>`; });
+  tl.forEach((b,i)=>{ const x = pl + i*bw + gap/2, w = Math.max(1,bw-gap);
+    if(b.pkts) s+=`<rect x="${x}" y="${y(b.pkts)}" width="${w}" height="${Hh-pb-y(b.pkts)}" rx="${Math.min(4,w/2)}" fill="var(--series-1)"/>`;
+    if(b.bad) s+=`<rect x="${x}" y="${y(b.bad)}" width="${w}" height="${Hh-pb-y(b.bad)}" rx="${Math.min(4,w/2)}" fill="var(--crit)" stroke="var(--surface)" stroke-width="1"/>`;
+    s+=`<rect class="hit" data-i="${i}" x="${pl+i*bw}" y="${pt}" width="${bw}" height="${Hh-pt-pb}" fill="transparent"/>`; });
+  s += `<line x1="${pl}" x2="${W-8}" y1="${Hh-pb}" y2="${Hh-pb}" stroke="var(--axis)"/>`;
+  [0, Math.floor(n/2), n-1].forEach(i=>{ if(tl[i]) s+=`<text x="${pl+i*bw+bw/2}" y="${Hh-6}" text-anchor="middle" font-size="11" fill="var(--muted)">${tl[i].t}s</text>`; });
+  el.innerHTML = s + "</svg>";
+  el.querySelectorAll(".hit").forEach(r=>{ r.onmousemove=e=>{ const b=tl[+r.dataset.i]; showTip(e,`<b>t = ${b.t}s</b><br>${b.pkts} packets · ${fmtB(b.bytes)}<br>${b.bad} problem packets`); }; r.onmouseleave=hideTip; });
+}
+
+/* ---------- root causes ---------- */
+function perspHtml(p){ const order=["client","server","network","routing","application","security","receiver"]; const keys = Object.keys(p||{}).sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  return keys.length?`<div class="persp">${keys.map(k=>`<div><b>${esc(k)} perspective</b>${esc(p[k])}</div>`).join("")}</div>`:""; }
+R.rootcause = el => {
+  if(!D.root_causes.length){ el.innerHTML='<div class="card empty">No correlated root causes found.</div>'; return; }
+  el.innerHTML = `<p class="muted">Each root cause links symptoms across layers and time into a causal chain: <i>what happened, why it happened, what it means from each perspective, and how to fix it.</i></p>` +
+  D.root_causes.map(r=>`<div class="card rc ${r.severity}" style="margin-bottom:14px">
+    <div>${sev(r.severity)} <span class="chip">fault domain: ${esc(r.fault_domain)}</span><span class="chip">confidence ${Math.round(r.confidence*100)}%</span>
+      ${r.affected.slice(0,6).map(a=>`<span class="chip mono">${esc(a)}</span>`).join("")}</div>
+    <h3>${esc(r.title)}</h3>
+    <div class="verdict">${esc(r.verdict)}</div>
+    <p style="margin:6px 0">${esc(r.narrative)}</p>
+    <div class="cols">
+      <div><h3>How it unfolded</h3><ol class="chain" style="--c:var(--${({critical:"crit",high:"high",medium:"med",low:"low",info:"info"})[r.severity]})">
+        ${r.chain.map(s=>`<li><span class="chip">${esc(s.layer)}</span><span class="mono small muted">${s.t==null?"":"t="+s.t+"s"}</span> ${s.no?pkLink(s.no):""}<div>${esc(s.text)}</div></li>`).join("")}</ol></div>
+      <div><h3>Remediation</h3><ul class="tight">${r.remediation.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+        <h3>Recommendations</h3><ul class="tight">${r.recommendations.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+        ${r.evidence.length?`<h3>Evidence</h3>${r.evidence.map(u=>`<a href="#" class="chip mono" onclick="plGoFinding('${u}');return false">${u}</a>`).join("")}`:""}</div>
+    </div>
+    <h3>Every perspective</h3>${perspHtml(r.perspectives)}
+  </div>`).join("");
+};
+
+/* ---------- findings ---------- */
+window.plGoFinding = uid => show("findings", ()=>{ const d = document.getElementById("f-"+uid); if(d){ d.open=true; d.scrollIntoView({block:"center"}); }});
+R.findings = el => {
+  const cats = [...new Set(D.findings.map(f=>f.category))].sort(), protos=[...new Set(D.findings.map(f=>f.protocol))].sort();
+  el.innerHTML = `<div class="filters"><input type="search" id="ff-q" placeholder="Search findings, hosts, URLs…">
+    <select id="ff-sev"><option value="">All severities</option>${SEV.map(s=>`<option>${s}</option>`).join("")}</select>
+    <select id="ff-cat"><option value="">All categories</option>${cats.map(s=>`<option>${esc(s)}</option>`).join("")}</select>
+    <select id="ff-proto"><option value="">All protocols</option>${protos.map(s=>`<option>${esc(s)}</option>`).join("")}</select></div><div id="ff-list"></div>`;
+  const list = $("#ff-list",el);
+  function draw(){ const q=$("#ff-q").value.toLowerCase(), s=$("#ff-sev").value, c=$("#ff-cat").value, p=$("#ff-proto").value;
+    const rows = D.findings.filter(f=>(!s||f.severity===s)&&(!c||f.category===c)&&(!p||f.protocol===p)&&(!q||JSON.stringify(f).toLowerCase().includes(q)));
+    list.innerHTML = rows.length? rows.map(f=>`<details class="f" id="f-${f.uid}"><summary>${sev(f.severity)}<div><b>${esc(f.title)}</b> <span class="chip">${esc(f.protocol)}</span><span class="chip">${esc(f.category)}</span>
+      <div class="muted">${esc(f.summary)}</div></div><span class="mono small muted">${f.uid}</span></summary>
+      <div class="body">
+        ${f.filter?`<div class="filterbox" title="Wireshark display filter"><span class="muted">Wireshark filter</span> <span>${esc(f.filter)}</span>
+          <button style="margin-left:auto" onclick="navigator.clipboard&&navigator.clipboard.writeText(${esc(JSON.stringify(f.filter))})">Copy</button></div>`:""}
+        <div class="cols" style="margin-top:8px">
+          <div><h3>Why this happens (probable causes)</h3><ul class="tight">${f.causes.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+          <div><h3>Remediation</h3><ul class="tight">${f.remediation.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+            <h3>Recommendations</h3><ul class="tight">${f.recommendations.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+        </div>
+        <h3>Every perspective</h3>${perspHtml(f.perspectives)}
+        ${f.entities.length?`<h3>Involved</h3>${f.entities.map(e=>`<span class="chip mono">${esc(e)}</span>`).join("")}`:""}
+        ${f.packets.length?`<h3>Evidence packets</h3><div>${f.packets.map(pkLink).join(" ")}</div>`:""}
+      </div></details>`).join("") : '<div class="card empty">No findings match.</div>'; }
+  ["ff-q","ff-sev","ff-cat","ff-proto"].forEach(id=>$("#"+id).addEventListener("input", draw)); draw();
+};
+
+/* ---------- generic sortable table ---------- */
+function table(el, cols, rows, opts={}){
+  let sortK=opts.sort||null, dir=opts.dir||1, q="";
+  el.innerHTML = (opts.search!==false?`<div class="filters"><input type="search" placeholder="Filter rows…"><span class="muted small cnt"></span></div>`:"") + `<div class="tablewrap"><table><thead><tr>${cols.map(c=>`<th class="${c.num?"num":""}" data-k="${c.k}">${esc(c.t)}</th>`).join("")}</tr></thead><tbody></tbody></table></div>`;
+  const tb = $("tbody",el);
+  function draw(){ let r = rows.filter(x=>!q||JSON.stringify(x).toLowerCase().includes(q));
+    if(sortK){ r=[...r].sort((a,b)=>{ const va=a[sortK], vb=b[sortK]; return (va==null)-(vb==null) || (va>vb?1:va<vb?-1:0)*dir; }); }
+    const lim=r.slice(0,opts.limit||2000);
+    tb.innerHTML = lim.map((x,i)=>`<tr class="${opts.click?"click":""}" data-i="${rows.indexOf(x)}">${cols.map(c=>`<td class="${c.num?"num":""} ${c.mono?"mono":""}">${c.f?c.f(x[c.k],x):esc(x[c.k])}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${cols.length}" class="empty">No rows</td></tr>`;
+    const c = $(".cnt",el); if(c) c.textContent = `${r.length.toLocaleString()} rows`+(r.length>lim.length?` (showing ${lim.length})`:"");
+    if(opts.click) tb.querySelectorAll("tr.click").forEach(tr=>tr.onclick=()=>opts.click(rows[+tr.dataset.i]));
+  }
+  el.querySelectorAll("th").forEach(th=>th.onclick=()=>{ const k=th.dataset.k; dir = sortK===k?-dir:1; sortK=k; draw(); });
+  const inp = $("input",el); if(inp) inp.oninput=()=>{ q=inp.value.toLowerCase(); draw(); };
+  draw();
+}
+
+/* ---------- TCP streams + ladder ---------- */
+const FLAG_ORDER = ["retransmission","fast_retransmission","spurious_retransmission","out_of_order","lost_segment","ack_unseen","duplicate_ack","zero_window","zero_window_probe","window_full","window_update","keep_alive"];
+R.tcp = el => {
+  el.innerHTML = `<p class="muted">Wireshark <span class="mono">tcp.analysis.*</span> equivalents per stream. iRTT is split into the server side (SYN→SYN-ACK) and the client side (SYN-ACK→ACK) to locate latency relative to the capture point. Click a stream for its ladder diagram.</p><div id="st-table"></div><div id="st-detail"></div>`;
+  const rows = D.streams.map(s=>({...s, bad: FLAG_ORDER.filter(f=>!["window_update","keep_alive"].includes(f)).reduce((a,f)=>a+(s.flags[f]||0),0),
+    retrans:(s.flags.retransmission||0)+(s.flags.fast_retransmission||0), rst: s.rst?`${s.rst.kind} (${s.rst.from})`:""}));
+  table($("#st-table",el), [
+    {k:"id",t:"#",num:1},{k:"client",t:"Client",mono:1},{k:"server",t:"Server",mono:1},{k:"app",t:"App"},
+    {k:"packets",t:"Pkts",num:1},{k:"payload_s2c",t:"Bytes S→C",num:1,f:v=>fmtB(v)},{k:"duration",t:"Duration",num:1,f:v=>fmtS(v)},
+    {k:"irtt_ms",t:"iRTT",num:1,f:ms},{k:"retrans",t:"Retrans",num:1},{k:"bad",t:"Bad TCP",num:1,f:v=>v?`<b style="color:var(--crit)">${v}</b>`:"0"},
+    {k:"max_delta_ms",t:"Max Δ",num:1,f:ms},{k:"completeness_str",t:"Completeness"},{k:"rst",t:"RST"}], rows, {click:s=>openStream(s.id), sort:"bad", dir:-1});
+};
+function openStream(id){
+  const s = D.streams.find(x=>x.id===id); const el = $("#st-detail"); if(!s||!el) return;
+  const flags = Object.entries(s.flags).sort((a,b)=>b[1]-a[1]);
+  el.innerHTML = `<div class="card" style="margin-top:14px"><h3 style="margin-top:0">Stream ${s.id}: ${esc(s.client)} ↔ ${esc(s.server)} <span class="chip">${esc(s.app)}</span></h3>
+   <div class="cols"><div class="kv">
+     <b>Duration</b><span>${fmtS(s.duration)}</span><b>Packets</b><span>${s.packets}</span>
+     <b>Payload C→S / S→C</b><span>${fmtB(s.payload_c2s)} / ${fmtB(s.payload_s2c)}</span>
+     <b>Throughput S→C</b><span>${fmtBps(s.throughput_bps_s2c)}</span>
+     <b>iRTT (server side / client side)</b><span>${ms(s.irtt_ms)} (${ms(s.server_side_ms)} / ${ms(s.client_side_ms)})</span>
+     <b>MSS (C/S)</b><span>${s.mss.map(x=>x??"—").join(" / ")}</span><b>Window scale (C/S)</b><span>${s.wscale.map(x=>x<0?"none":x).join(" / ")}</span>
+     <b>SACK (C/S)</b><span>${s.sack.map(x=>x?"yes":"no").join(" / ")}</span><b>Max bytes in flight (C/S)</b><span>${s.max_bif.join(" / ")}</span>
+     <b>Completeness</b><span>${esc(s.completeness_str)} (${s.completeness})</span><b>RST</b><span>${s.rst?`${esc(s.rst.kind)} from ${esc(s.rst.from)} ${pkLink(s.rst.no)}`:"—"}</span>
+   </div><div>
+     <b class="small muted">TCP analysis flags</b><div>${flags.map(([k,v])=>`<span class="chip">${esc(k)} × ${v}</span>`).join("")||'<span class="muted">none — clean stream</span>'}</div>
+     ${s.gaps.length?`<b class="small muted">Gaps &gt; 1 s (who was the delay?)</b><ul class="tight small">${s.gaps.map(g=>`<li>${pkLink(g.no)} ${g.seconds}s — ${esc(g.cause)}</li>`).join("")}</ul>`:""}
+     ${s.response_times_ms.length?`<b class="small muted">Request → response times</b><ul class="tight small">${s.response_times_ms.slice(0,10).map(([a,b,t])=>`<li>${pkLink(a)} → ${pkLink(b)}: ${ms(t)}</li>`).join("")}</ul>`:""}
+   </div></div>
+   <h3>Ladder diagram</h3><div class="legend"><span><i style="background:var(--series-1)"></i>Client → server</span><span><i style="background:var(--muted)"></i>Server → client</span><span><i style="background:var(--crit)"></i>TCP analysis flag</span></div>
+   <div class="ladderwrap" id="ladder"></div></div>`;
+  ladder($("#ladder"), s);
+  el.scrollIntoView({block:"start", behavior:"smooth"});
+}
+function ladder(el, s){
+  const rows = s.ladder, W = Math.max(560, el.clientWidth||800), rowH = 26, top=34, H = top + rows.length*rowH + 10;
+  const xl = 150, xr = W-240;
+  let g = `<svg width="${W}" height="${H}" role="img" aria-label="TCP ladder diagram">
+   <text x="${xl}" y="18" text-anchor="middle" font-size="12" fill="var(--ink)" font-weight="600">${esc(s.client)}</text>
+   <text x="${xr}" y="18" text-anchor="middle" font-size="12" fill="var(--ink)" font-weight="600">${esc(s.server)}</text>
+   <line x1="${xl}" x2="${xl}" y1="24" y2="${H}" stroke="var(--axis)" stroke-width="2"/><line x1="${xr}" x2="${xr}" y1="24" y2="${H}" stroke="var(--axis)" stroke-width="2"/>`;
+  rows.forEach((r,i)=>{ const y = top + i*rowH + 12; const c2s = r.dir==="c2s"; const bad = r.analysis.filter(a=>!["window_update","keep_alive_ack"].includes(a));
+    const col = bad.length?"var(--crit)":c2s?"var(--series-1)":"var(--muted)";
+    const x1 = c2s?xl:xr, x2 = c2s?xr:xl, ah = c2s?-7:7;
+    g += `<g class="lr" data-i="${i}" style="cursor:pointer"><rect x="0" y="${y-12}" width="${W}" height="${rowH}" fill="transparent"/>
+      <line x1="${x1}" x2="${x2}" y1="${y-5}" y2="${y+5}" stroke="${col}" stroke-width="2"/>
+      <path d="M${x2} ${y+5} l${ah} -1 l${ah*0.3} -6 z" fill="${col}"/>
+      <text x="8" y="${y+4}" font-size="11" fill="var(--muted)" class="mono">${r.t.toFixed(4)}s #${r.no}</text>
+      <text x="${(xl+xr)/2}" y="${y-2}" text-anchor="middle" font-size="11" fill="var(--ink-2)">${esc(r.flags)} ${r.len?`len=${r.len}`:""} ${bad.length?"["+esc(bad.join(", "))+"]":""}</text>
+      <text x="${W-8}" y="${y+4}" text-anchor="end" font-size="11" fill="var(--muted)">seq=${r.seq} ack=${r.ack} win=${r.win}</text></g>`; });
+  el.innerHTML = g + "</svg>";
+  el.querySelectorAll(".lr").forEach(n=>{ const r=rows[+n.dataset.i];
+    n.onmousemove=e=>showTip(e,`<b>#${r.no}</b> ${r.dir==="c2s"?"client → server":"server → client"}<br>${esc(r.app)} ${esc(r.flags)} len ${r.len}<br>rel seq ${r.seq} · rel ack ${r.ack} · win ${r.win}${r.analysis.length?"<br><b>"+esc(r.analysis.join(", "))+"</b>":""}`);
+    n.onmouseleave=hideTip; n.onclick=()=>plGoPacket(r.no); });
+}
+
+/* ---------- DNS / DHCP ---------- */
+R.app = el => {
+  el.innerHTML = `<h2>DNS transactions</h2><div id="dns-t"></div><h2>DHCP transactions (DORA)</h2><div id="dhcp-t"></div><h2>ICMP errors / control messages</h2><div id="icmp-t"></div>`;
+  const rc = v => v==null?'<span class="sev critical">no response</span>':v==="NOERROR"?esc(v):`<span class="sev ${v==="NXDOMAIN"?"medium":"critical"}">${esc(v)}</span>`;
+  table($("#dns-t",el), [{k:"query_no",t:"#",num:1,f:pkLink},{k:"t",t:"Time",num:1},{k:"client",t:"Client",mono:1},{k:"server",t:"Resolver",mono:1},
+    {k:"qtype",t:"Type"},{k:"qname",t:"Name",mono:1},{k:"rcode",t:"Result",f:rc},{k:"time_ms",t:"DNS time",num:1,f:v=>v==null?"—":`<span style="${v>50?"color:var(--crit);font-weight:600":""}">${ms(v)}</span>`},
+    {k:"retries",t:"Retries",num:1},{k:"answers",t:"Answers",mono:1,f:v=>esc((v||[]).join(", "))}], D.dns);
+  const oc = v => ({success:'<span class="sev info">success</span>'})[v] || `<span class="sev high">${esc(v)}</span>`;
+  table($("#dhcp-t",el), [{k:"first_no",t:"#",num:1,f:pkLink},{k:"xid",t:"XID",mono:1},{k:"client_mac",t:"Client MAC",mono:1},{k:"hostname",t:"Host"},
+    {k:"sequence",t:"Messages"},{k:"outcome",t:"Outcome",f:oc},{k:"yiaddr",t:"Leased IP",mono:1},{k:"servers",t:"Server(s)",mono:1,f:v=>esc((v||[]).join(", "))},
+    {k:"relay",t:"Relay",mono:1},{k:"duration_ms",t:"Duration",num:1,f:ms},{k:"nak_msg",t:"NAK reason"}], D.dhcp);
+  table($("#icmp-t",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"t",t:"Time",num:1},{k:"reporter",t:"Reported by",mono:1},{k:"to",t:"Sent to",mono:1},
+    {k:"type",t:"Type"},{k:"code",t:"Code"},{k:"orig",t:"Original flow",mono:1}], D.icmp);
+};
+
+/* ---------- Web ---------- */
+R.web = el => {
+  el.innerHTML = `<h2>URL inventory</h2><div id="url-t"></div><h2>HTTP transactions</h2><div id="http-t"></div><h2>TLS sessions</h2><div id="tls-t"></div>`;
+  const st = v => v==null?'<span class="muted">—</span>':v>=500?`<span class="sev critical">${v}</span>`:v>=400?`<span class="sev medium">${v}</span>`:esc(v);
+  table($("#url-t",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"method",t:"Method"},{k:"url",t:"URL",mono:1},{k:"status",t:"Status / TLS",f:v=>typeof v==="number"?st(v):esc(v??"—")},{k:"time_ms",t:"Time",num:1,f:ms}], D.urls);
+  table($("#http-t",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"stream",t:"Stream",num:1,f:v=>`<a href="#" onclick="plGoStream(${v});return false">${v}</a>`},{k:"client",t:"Client",mono:1},
+    {k:"method",t:"Method"},{k:"url",t:"URL",mono:1},{k:"version",t:"Ver"},{k:"status",t:"Status",f:st},{k:"time_ms",t:"http.time",num:1,f:v=>v==null?"—":`<span style="${v>2000?"color:var(--crit);font-weight:600":""}">${ms(v)}</span>`},
+    {k:"user_agent",t:"User-Agent",f:v=>`<span class="small">${esc(v||"—")}</span>`}], D.http);
+  table($("#tls-t",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"client",t:"Client",mono:1},{k:"server",t:"Server",mono:1},{k:"sni",t:"SNI",mono:1},
+    {k:"offered",t:"Offered"},{k:"negotiated",t:"Negotiated",f:(v,r)=>v?((r.negotiated_num||0)<0x0303?`<span class="sev medium">${esc(v)}</span>`:esc(v)):'<span class="sev high">no ServerHello</span>'},
+    {k:"cipher",t:"Cipher",mono:1,f:(v,r)=>r.weak_selected?`<span class="sev high">${esc(r.weak_selected)}</span>`:esc(v||"—")},
+    {k:"alpn",t:"ALPN",f:v=>esc((v||[]).join(","))},{k:"handshake_ms",t:"Hello RTT",num:1,f:ms},
+    {k:"alert",t:"Alert",f:v=>v?`<span class="sev ${v.level==="fatal"?"critical":"medium"}">${esc(v.description)}</span>`:""},{k:"ja3",t:"JA3",mono:1,f:(v,r)=>`<span class="small">${esc(v)}</span>${r.known_bad?` <span class="sev critical">${esc(r.known_bad)}</span>`:""}`}], D.tls);
+};
+
+/* ---------- Routing ---------- */
+R.routing = el => {
+  const r = D.routing||{}; let h = "";
+  if(r.bgp&&r.bgp.length){ h += `<h2>BGP sessions</h2><div id="bgp-t"></div><h3>BGP message timeline</h3><div id="bgp-ev"></div>`; }
+  if(r.ospf){ h += `<h2>OSPF routers</h2><div id="ospf-t"></div><h3>OSPF packets</h3><div id="ospf-ev"></div>`; }
+  if(r.eigrp){ h += `<h2>EIGRP neighbors</h2><div id="eigrp-t"></div><h3>EIGRP packets</h3><div id="eigrp-ev"></div>`; }
+  if(r.rip){ h += `<h2>RIP routers</h2><div id="rip-t"></div>`; }
+  el.innerHTML = h || '<div class="card empty">No BGP, OSPF, EIGRP or RIP traffic in this capture.</div>';
+  if(r.bgp&&r.bgp.length){
+    table($("#bgp-t",el), [{k:"peers",t:"Peers",mono:1,f:v=>esc(v.join(" ↔ "))},{k:"state",t:"Last state",f:v=>v==="Established"?esc(v):`<span class="sev high">${esc(v)}</span>`},
+      {k:"as",t:"AS",mono:1,f:v=>esc(Object.entries(v).map(([k,a])=>k+"=AS"+a).join(", "))},{k:"hold",t:"Hold time",mono:1,f:v=>esc(Object.entries(v).map(([k,a])=>k+"="+a+"s").join(", "))},
+      {k:"keepalives",t:"KA",num:1},{k:"updates",t:"Updates",num:1},{k:"announced",t:"Prefixes +",num:1},{k:"withdrawn_count",t:"Prefixes −",num:1},
+      {k:"tcp_retrans",t:"TCP retrans",num:1},{k:"notifications",t:"Notifications",f:v=>v.map(n=>`<span class="sev critical">${esc(n.error)}${n.sub?" / "+esc(n.sub):""}</span> ${pkLink(n.no)}`).join("<br>")}], r.bgp, {search:false});
+    table($("#bgp-ev",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"t",t:"Time",num:1},{k:"from",t:"From",mono:1},{k:"type",t:"Message"},{k:"detail",t:"Detail",mono:1}], r.bgp.flatMap(s=>s.events).sort((a,b)=>a.t-b.t));
+  }
+  if(r.ospf){ table($("#ospf-t",el), [{k:"router_id",t:"Router ID",mono:1},{k:"interfaces",t:"Interfaces",mono:1,f:v=>esc(v.join(", "))},{k:"area",t:"Area",f:v=>esc(v.join(", "))},
+      {k:"hello",t:"Hello",num:1},{k:"dead",t:"Dead",num:1},{k:"mtu",t:"DBD MTU",f:v=>esc(v.join(", "))},{k:"auth",t:"Auth",f:v=>esc(v.join(", "))},{k:"neighbors_seen",t:"Neighbors listed",mono:1,f:v=>esc(v.join(", ")||"none")},{k:"packets",t:"Pkts",num:1}], r.ospf.routers, {search:false});
+    table($("#ospf-ev",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"t",t:"Time",num:1},{k:"src",t:"Source",mono:1},{k:"rid",t:"RID",mono:1},{k:"type",t:"Type"},{k:"detail",t:"Detail",mono:1}], r.ospf.events); }
+  if(r.eigrp){ table($("#eigrp-t",el), [{k:"address",t:"Address",mono:1},{k:"as",t:"AS",f:v=>esc(v.join(","))},{k:"k",t:"K-values",mono:1,f:v=>esc(v?v.join(" "):"—")},{k:"hold",t:"Hold",num:1},
+      {k:"auth",t:"Auth",f:v=>v?"yes":"no"},{k:"hellos",t:"Hellos",num:1},{k:"updates",t:"Updates",num:1},{k:"queries",t:"Queries",num:1},{k:"replies",t:"Replies",num:1},{k:"sw",t:"SW ver"}], r.eigrp.neighbors, {search:false});
+    table($("#eigrp-ev",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"t",t:"Time",num:1},{k:"src",t:"Source",mono:1},{k:"dst",t:"Dest",mono:1},{k:"type",t:"Opcode"},{k:"detail",t:"Detail",mono:1}], r.eigrp.events); }
+  if(r.rip){ table($("#rip-t",el), [{k:"address",t:"Router",mono:1},{k:"versions",t:"Version(s)",f:v=>esc(v.join(","))},{k:"auth",t:"Auth",f:v=>v?"yes":"no"},{k:"responses",t:"Updates",num:1},
+      {k:"routes",t:"Routes (metric)",mono:1,f:v=>Object.entries(v).map(([k,m])=>`${esc(k)} <b style="${m>=16?"color:var(--crit)":""}">${m}</b>`).join("<br>")}], r.rip.routers, {search:false}); }
+};
+
+/* ---------- Packets ---------- */
+let pktSel = null;
+function selectPacket(no, scroll){ const tr = document.getElementById("pk-"+no); if(!tr){ const f=$("#pk-q"); if(f){ f.value="no:"+no; f.dispatchEvent(new Event("input")); } return selectPacket(no, scroll); }
+  if(pktSel) pktSel.classList.remove("sel"); tr.classList.add("sel"); pktSel = tr; if(scroll) tr.scrollIntoView({block:"center"}); detail(no); }
+function detail(no){ const p = D.packets.find(x=>x.no===no); if(!p) return;
+  $("#pk-detail").innerHTML = `<div class="kv"><b>Frame</b><span>#${p.no} · t=${p.t}s · ${p.len} bytes</span><b>Endpoints</b><span class="mono">${esc(p.src)}${p.sport!=null?":"+p.sport:""} → ${esc(p.dst)}${p.dport!=null?":"+p.dport:""}</span>
+    <b>Protocol</b><span>${esc(p.proto)}</span><b>TTL</b><span>${p.ttl??"—"}</span><b>Info</b><span class="mono">${esc(p.info)}</span>
+    ${p.stream!=null?`<b>TCP stream</b><span><a href="#" onclick="plGoStream(${p.stream});return false">${p.stream}</a> · Δ ${fmtS(p.delta)} · calc win ${p.win} · bytes in flight ${p.bif}</span>`:""}
+    <b>Expert flags</b><span>${[...p.analysis,...p.tags].map(a=>`<span class="chip">${esc(a)}</span>`).join("")||"—"}</span><b>Colour rule</b><span>${esc(p.color)}</span></div>`; }
+R.packets = el => {
+  const COLS = [["bad_tcp","Bad TCP"],["icmp_error","ICMP errors"],["rst","TCP RST"],["syn","TCP SYN"],["fin","TCP FIN"],["tls","TLS handshake"],["http","HTTP"],["dns","DNS"],["dns_error","DNS critical"],["arp","ARP"],["routing","Routing"],["tcp","TCP"],["udp","UDP"]];
+  el.innerHTML = `<p class="muted">Packet list with colouring rules modelled on Chris Greer's Wireshark profiles (Bad TCP = <span class="mono">tcp.analysis.flags &amp;&amp; !tcp.analysis.window_update</span>). Filter: free text, or <span class="mono">proto:dns</span>, <span class="mono">ip:10.0.0.1</span>, <span class="mono">port:443</span>, <span class="mono">stream:3</span>, <span class="mono">no:120</span>, <span class="mono">bad</span>, <span class="mono">delta&gt;1</span>.</p>
+   <div class="legend">${COLS.map(([k,l])=>`<span><i style="background:var(--c-${k==="bad_tcp"?"bad-fg":k==="icmp_error"?"icmperr-fg":k==="dns_error"?"dnserr-bg":k+"-bg"})"></i>${l}</span>`).join("")}</div>
+   <div class="filters"><input type="search" id="pk-q" placeholder="Filter packets…"><span class="muted small" id="pk-cnt"></span>
+   ${["bad","proto:dns","proto:tcp && syn","proto:ospf","proto:bgp","delta>1"].map(q=>`<button class="small" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+   <div class="grid" style="grid-template-columns:minmax(0,1fr)"><div class="tablewrap" style="max-height:60vh"><table><thead><tr><th class="num">No.</th><th class="num">Time</th><th class="num">Delta</th><th>Source</th><th>Destination</th><th>Protocol</th><th class="num">Len</th><th class="num">TTL</th><th>Info</th></tr></thead><tbody id="pk-body"></tbody></table></div>
+   <div class="card" id="pk-detail"><span class="muted">Select a packet.</span></div></div>
+   ${D.packets_truncated?`<div class="warn">Packet list truncated to the first ${D.packets.length.toLocaleString()} packets (analysis covered all ${D.stats.packets.toLocaleString()}).</div>`:""}`;
+  const body = $("#pk-body",el), q = $("#pk-q",el);
+  function match(p, term){ term=term.trim(); if(!term) return true; const m = term.match(/^(\w+)\s*([:<>])\s*(.+)$/);
+    if(term==="bad") return p.color==="bad_tcp"||p.color==="icmp_error"; if(term==="syn") return /SYN/.test(p.info)&&p.stream!=null;
+    if(m){ const [_,k,op,v]=m; const lv=v.toLowerCase();
+      if(k==="proto") return p.proto.toLowerCase()===lv || (lv==="tcp"&&p.stream!=null) || (lv==="udp"&&p.color==="udp");
+      if(k==="ip") return p.src===v||p.dst===v; if(k==="port") return String(p.sport)===v||String(p.dport)===v;
+      if(k==="stream") return String(p.stream)===v; if(k==="no") return String(p.no)===v;
+      if(k==="delta") return p.delta!=null && (op===">"?p.delta>+v:op==="<"?p.delta<+v:p.delta===+v); }
+    return JSON.stringify(p).toLowerCase().includes(term.toLowerCase()); }
+  function draw(){ const terms = q.value.split("&&"); const rows = D.packets.filter(p=>terms.every(t=>match(p,t))); const lim = rows.slice(0,3000);
+    body.innerHTML = lim.map(p=>`<tr class="pkt ${p.color}" id="pk-${p.no}" data-no="${p.no}"><td class="num">${p.no}</td><td class="num">${p.t.toFixed(6)}</td><td class="num">${p.delta!=null?p.delta.toFixed(6):""}</td>
+      <td>${esc(p.src)}</td><td>${esc(p.dst)}</td><td>${esc(p.proto)}</td><td class="num">${p.len}</td><td class="num">${p.ttl??""}</td><td>${esc(p.info)}</td></tr>`).join("");
+    $("#pk-cnt").textContent = `${rows.length.toLocaleString()} packets`+(rows.length>lim.length?` (showing ${lim.length})`:"");
+    body.querySelectorAll("tr").forEach(tr=>tr.onclick=()=>selectPacket(+tr.dataset.no)); }
+  q.oninput = draw; el.querySelectorAll("button[data-q]").forEach(b=>b.onclick=()=>{ q.value=b.dataset.q; draw(); }); draw();
+};
+
+/* ---------- Conversations & endpoints ---------- */
+R.conv = el => {
+  el.innerHTML = `<h2>Endpoints (source → destination path view)</h2><p class="muted small">Hop estimate = inferred initial TTL (64/128/255) − observed TTL. OS family is inferred from initial TTL.</p><div id="ep-t"></div>
+    <h2>TCP/UDP conversations</h2><div id="cv-t"></div><h2>IP conversations</h2><div id="ipc-t"></div><h2>ARP table</h2><div id="arp-t"></div>`;
+  table($("#ep-t",el), [{k:"ip",t:"Address",mono:1},{k:"names",t:"DNS names",mono:1,f:v=>esc((v||[]).join(", "))},{k:"tx_pkts",t:"Tx pkts",num:1},{k:"rx_pkts",t:"Rx pkts",num:1},
+    {k:"tx_bytes",t:"Tx",num:1,f:fmtB},{k:"rx_bytes",t:"Rx",num:1,f:fmtB},{k:"ttl",t:"TTL",num:1},{k:"hops",t:"Hops away",num:1},{k:"os_guess",t:"OS family"},{k:"macs",t:"MAC(s)",mono:1,f:v=>esc((v||[]).join(", "))}], D.stats.endpoints);
+  table($("#cv-t",el), [{k:"proto",t:"Proto"},{k:"a",t:"Address A",mono:1},{k:"b",t:"Address B",mono:1},{k:"packets_ab",t:"Pkts A→B",num:1},{k:"packets_ba",t:"Pkts B→A",num:1},
+    {k:"bytes_ab",t:"Bytes A→B",num:1,f:fmtB},{k:"bytes_ba",t:"Bytes B→A",num:1,f:fmtB},{k:"duration",t:"Duration",num:1,f:fmtS},{k:"apps",t:"Apps",f:v=>esc(v.join(", "))}], D.conversations);
+  table($("#ipc-t",el), [{k:"proto",t:"Proto"},{k:"a",t:"A",mono:1},{k:"b",t:"B",mono:1},{k:"packets_ab",t:"Pkts A→B",num:1},{k:"packets_ba",t:"Pkts B→A",num:1},
+    {k:"bytes_ab",t:"Bytes A→B",num:1,f:fmtB},{k:"bytes_ba",t:"Bytes B→A",num:1,f:fmtB},{k:"apps",t:"Apps",f:v=>esc(v.join(", "))}], D.ip_conversations);
+  table($("#arp-t",el), [{k:"ip",t:"IP",mono:1},{k:"macs",t:"MAC(s)",mono:1,f:v=>v.length>1?`<span class="sev critical">${esc(v.join(", "))}</span>`:esc(v.join(", "))}],
+    Object.entries(D.arp||{}).map(([ip,macs])=>({ip,macs})), {search:false});
+};
+
+const start = store("pl-tab"); show(TABS.some(t=>t[0]===start)?start:"overview");
+})();
+</script>
+</body>
+</html>
