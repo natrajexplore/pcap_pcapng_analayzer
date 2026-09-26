@@ -7,7 +7,6 @@ from ..knowledge import make
 
 CLEARTEXT = {21: "FTP", 23: "Telnet", 110: "POP3", 143: "IMAP", 513: "rlogin", 514: "rsh"}
 SUSPICIOUS_PORTS = {1337, 4444, 31337, 6667, 12345, 5555}
-MZ_STUB = b"This program cannot be run in DOS mode"
 
 
 def _scan_stats(ctx):
@@ -61,12 +60,11 @@ def run(ctx) -> None:
             clear[CLEARTEXT[s.sport]].add(f"{s.client} → {s.server}")
         if (s.sport in SUSPICIOUS_PORTS or s.cport in SUSPICIOUS_PORTS) and s.completeness & 2:
             susp[s.sport if s.sport in SUSPICIOUS_PORTS else s.cport].add(f"{s.client}:{s.cport} → {s.server}:{s.sport}")
-    for p in ctx.packets:
-        if p.payload:
-            if MZ_STUB in p.payload:
-                mz.append(p)
-            if b"${jndi:" in p.payload.lower():
-                jndi.append(p)
+    for p in ctx.packets:              # payload signatures are tagged while reading (analyzer.run)
+        if "mz_stub" in p.tags:
+            mz.append(p)
+        if "jndi" in p.tags:
+            jndi.append(p)
     if clear:
         F.append(make("sec_cleartext_protocol", "Cleartext protocols in use: " +
                       "; ".join(f"{k}: {', '.join(sorted(v)[:3])}" for k, v in clear.items())))

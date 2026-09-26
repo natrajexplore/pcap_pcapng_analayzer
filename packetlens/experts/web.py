@@ -24,13 +24,16 @@ def run(ctx) -> None:
             t = {"no": p.no, "ts": p.ts, "t": round(p.rel_ts, 6), "stream": sid, "client": p.src, "server": f"{p.dst}:{p.dport}",
                  "method": d["method"], "url": d["url"], "uri": d["uri"], "host": d["host"], "version": d["version"],
                  "user_agent": d["user_agent"], "status": None, "reason": None, "time_ms": None, "response_no": None,
-                 "auth": "authorization" in d["headers"], "body": d["body_preview"], "content_type": None}
+                 "auth": "authorization" in d["headers"], "body": d["body_preview"], "content_type": None,
+                 "tls": bool(d.get("tls"))}
             open_reqs[sid].append(t)
             txs.append(t)
         elif open_reqs.get(sid):
             t = open_reqs[sid].pop(0)
             t.update(status=d["status"], reason=d["reason"], time_ms=round((p.ts - t["ts"]) * 1000, 3),
                      response_no=p.no, content_type=d["content_type"])
+    txs += _http2(ctx)
+    txs.sort(key=lambda t: t["no"])
     ctx.http_transactions = txs
     for t in txs:
         ctx.urls.append({"url": t["url"], "method": t["method"], "status": t["status"], "time_ms": t["time_ms"], "no": t["no"]})
@@ -62,7 +65,8 @@ def run(ctx) -> None:
          ", ".join(sorted({f"{t['client']} → '{t['user_agent']}'" for t in sua})[:5]))
     emit("http_file_download", [t for t in txs if FILE_EXT.search(t["uri"])],
          "Executable/archive files requested over cleartext HTTP.")
-    creds = [t for t in txs if t["auth"] or re.search(r"(?i)(pass(word|wd)?|pwd)=", t["uri"] + " " + (t["body"] or ""))]
+    creds = [t for t in txs if not t.get("tls") and not t["url"].startswith("https://")      # decrypted TLS is not cleartext
+             and (t["auth"] or re.search(r"(?i)(pass(word|wd)?|pwd)=", t["uri"] + " " + (t["body"] or "")))]
     emit("http_cleartext_credentials", creds, f"{len(creds)} HTTP request(s) carrying credentials in cleartext "
                                              f"(Authorization header or password parameter).")
 
@@ -89,6 +93,10 @@ def run(ctx) -> None:
         if "alert" in d and sid in hellos and hellos[sid]["alert"] is None:
             hellos[sid]["alert"] = {**d["alert"], "no": p.no, "from": "client" if p.src == hellos[sid]["client"] else "server"}
     tls_list = list(hellos.values())
+    for h in tls_list:
+        dec = ctx.tls_decrypt.get(h["stream"]) or {}
+        h["decryption"] = (f"decrypted ({dec['records']} records)" if dec.get("records") else dec.get("status")) \
+            if ctx.keylog is not None else None
     ctx.tls_sessions = tls_list
     if not tls_list:
         return
@@ -121,3 +129,46 @@ def run(ctx) -> None:
     emit2("tls_known_bad_ja3", bad, "; ".join(f"{h['client']} → {h['sni'] or h['server']}: JA3 {h['ja3']} = {h['known_bad']}" for h in bad[:5]))
     nosni = [h for h in tls_list if not h["sni"]]
     emit2("tls_missing_sni", nosni, f"{len(nosni)} ClientHello(s) without SNI.")
+
+
+def _http2(ctx) -> list:
+    """HTTP/2 request/response pairing per (TCP stream, h2 stream id) + GOAWAY / RST_STREAM findings."""
+    F = ctx.findings
+    open_: dict = {}
+    txs, goaway, rst = [], [], []
+    for p in ctx.packets:
+        h = p.layers.get("http2")
+        if not h or not p.tcp:
+            continue
+        for fr in h["frames"]:
+            key = (p.tcp.stream, fr["stream"])
+            hdrs = dict(fr.get("headers") or [])
+            if fr["type"] == "HEADERS" and ":method" in hdrs:
+                scheme = "https" if h.get("tls") else hdrs.get(":scheme", "http")
+                t = {"no": p.no, "ts": p.ts, "t": round(p.rel_ts, 6), "stream": p.tcp.stream, "client": p.src,
+                     "server": f"{p.dst}:{p.dport}", "method": hdrs[":method"], "uri": hdrs.get(":path", ""),
+                     "host": hdrs.get(":authority"), "url": f"{scheme}://{hdrs.get(':authority', p.dst)}{hdrs.get(':path', '')}",
+                     "version": "HTTP/2", "user_agent": hdrs.get("user-agent"), "status": None, "reason": "",
+                     "time_ms": None, "response_no": None, "auth": "authorization" in hdrs, "body": "",
+                     "content_type": None, "h2_stream": fr["stream"], "tls": bool(h.get("tls"))}
+                open_[key] = t
+                txs.append(t)
+            elif fr["type"] == "HEADERS" and ":status" in hdrs and key in open_:
+                t = open_.pop(key)
+                t.update(status=int(hdrs[":status"]), time_ms=round((p.ts - t["ts"]) * 1000, 3), response_no=p.no,
+                         content_type=hdrs.get("content-type"))
+            elif fr["type"] == "GOAWAY" and fr.get("error") != "NO_ERROR":
+                goaway.append((p, fr))
+            elif fr["type"] == "RST_STREAM" and fr.get("error") not in ("NO_ERROR", "CANCEL"):
+                rst.append((p, fr))
+    if goaway:
+        F.append(make("http2_goaway", "HTTP/2 connections closed with an error: " + "; ".join(
+            f"{p.src}→{p.dst} {fr['error']} (last stream {fr['last_stream']}{', ' + repr(fr['debug'][:60]) if fr.get('debug') else ''})"
+            for p, fr in goaway[:5]), packets=[p.no for p, _ in goaway[:20]], ts=goaway[0][0].ts, count=len(goaway),
+            severity="high" if any(fr["error"] in ("PROTOCOL_ERROR", "INTERNAL_ERROR", "ENHANCE_YOUR_CALM", "COMPRESSION_ERROR")
+                                   for _, fr in goaway) else "medium"))
+    if rst:
+        F.append(make("http2_rst_stream", f"{len(rst)} HTTP/2 streams reset: " + ", ".join(
+            sorted({fr["error"] for _, fr in rst})) + ".", packets=[p.no for p, _ in rst[:20]], ts=rst[0][0].ts, count=len(rst),
+            severity="high" if any(fr["error"] in ("REFUSED_STREAM", "INTERNAL_ERROR", "FLOW_CONTROL_ERROR") for _, fr in rst) else "medium"))
+    return txs

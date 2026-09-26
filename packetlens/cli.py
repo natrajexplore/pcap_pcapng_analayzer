@@ -75,20 +75,65 @@ def text_report(a, color: bool = True, verbose: bool = False, width: int = 100) 
     return "\n".join(out)
 
 
+def _output_args(p) -> None:
+    p.add_argument("--html", help="write the interactive HTML report to this path")
+    p.add_argument("--json", help="write the full analysis as JSON to this path ('-' for stdout)")
+    p.add_argument("--keylog", help="TLS key log (SSLKEYLOGFILE) to decrypt TLS 1.2/1.3 sessions")
+    p.add_argument("--packet-list", type=int, default=5000, help="packets embedded in the HTML/JSON packet list")
+    p.add_argument("-v", "--verbose", action="store_true", help="print perspectives, causes and filters for every finding")
+    p.add_argument("-q", "--quiet", action="store_true", help="no console report")
+    p.add_argument("--no-color", action="store_true")
+    p.add_argument("--fail-on", choices=["critical", "high", "medium", "low"],
+                   help="exit 2 if a finding at or above this severity exists (CI use)")
+
+
+def _emit(a, args, extra_text: str = "") -> int:
+    color = sys.stdout.isatty() and not args.no_color and os.environ.get("NO_COLOR") is None
+    data = a.to_dict(packet_limit=args.packet_list) if (args.html or args.json) else None
+    if args.json:
+        js = json.dumps(data, default=html._json_default, indent=1)
+        if args.json == "-":
+            print(js)
+        else:
+            with open(args.json, "w", encoding="utf-8") as fh:
+                fh.write(js)
+    if args.html:
+        html.write(data, args.html)
+    if not args.quiet and args.json != "-":
+        if extra_text:
+            print(extra_text + "\n")
+        print(text_report(a, color=color, verbose=args.verbose))
+        if args.html:
+            print(f"\nHTML report: {args.html}")
+    if args.fail_on:
+        from .findings import SEVERITY_ORDER
+        if any(SEVERITY_ORDER[f.severity] <= SEVERITY_ORDER[args.fail_on] for f in a.findings):
+            return 2
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="packetlens", description="Modern pcap/pcapng analyzer with root-cause correlation.")
     ap.add_argument("--version", action="version", version=f"PacketLens {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     an = sub.add_parser("analyze", help="analyze a capture file")
     an.add_argument("capture")
-    an.add_argument("--html", help="write the interactive HTML report to this path")
-    an.add_argument("--json", help="write the full analysis as JSON to this path ('-' for stdout)")
     an.add_argument("--max-packets", type=int, default=None)
-    an.add_argument("--packet-list", type=int, default=5000, help="packets embedded in the HTML/JSON packet list")
-    an.add_argument("-v", "--verbose", action="store_true", help="print perspectives, causes and filters for every finding")
-    an.add_argument("-q", "--quiet", action="store_true", help="no console report")
-    an.add_argument("--no-color", action="store_true")
-    an.add_argument("--fail-on", choices=["critical", "high", "medium", "low"], help="exit 2 if a finding at or above this severity exists (CI use)")
+    an.add_argument("--keep-payload", action="store_true", help="keep payload bytes in memory after decoding")
+    _output_args(an)
+    cp = sub.add_parser("compare", help="compare two captures of the same traffic taken at different points (locate loss)")
+    cp.add_argument("capture_a")
+    cp.add_argument("capture_b")
+    _output_args(cp)
+    lv = sub.add_parser("live", help="capture live traffic (Linux, root/CAP_NET_RAW) and analyze it")
+    lv.add_argument("-i", "--interface", default="any")
+    lv.add_argument("-d", "--duration", type=float, default=30.0, help="seconds to capture (default 30)")
+    lv.add_argument("-c", "--count", type=int, default=None, help="stop after N packets")
+    lv.add_argument("--host", help="only packets to/from this IPv4 address")
+    lv.add_argument("--port", type=int, help="only TCP/UDP packets on this port")
+    lv.add_argument("-s", "--snaplen", type=int, default=262144)
+    lv.add_argument("-w", "--write", default="packetlens-live.pcapng", help="pcapng file to save the capture to")
+    _output_args(lv)
     dm = sub.add_parser("demo", help="generate a demo capture covering every analyzer and analyze it")
     dm.add_argument("--out", default="packetlens-demo.pcapng")
     dm.add_argument("--html", default="packetlens-demo.html")
@@ -112,34 +157,38 @@ def main(argv=None) -> int:
         print(text_report(a, color=sys.stdout.isatty()))
         print(f"\nHTML report: {args.html}")
         return 0
-
     try:
-        a = analyze_file(args.capture, max_packets=args.max_packets)
+        if args.cmd == "compare":
+            from .compare import annotate, compare_files, text
+            a, _b, res = compare_files(args.capture_a, args.capture_b, keylog_path=args.keylog)
+            annotate(a, res)
+            return _emit(a, args, text(res))
+        if args.cmd == "live":
+            from . import live
+            print(f"Capturing on {args.interface} for {args.duration:g}s"
+                  + (f" or {args.count} packets" if args.count else "") + " … (Ctrl+C to stop early)", file=sys.stderr)
+            frames: list = []
+            try:
+                live.capture(args.interface, args.duration, args.count, args.snaplen, args.host, args.port,
+                             on_packet=frames.append)
+            except KeyboardInterrupt:
+                pass
+            live.save(frames, args.write)
+            print(f"Saved {len(frames)} packets to {args.write}", file=sys.stderr)
+            a = analyze_file(args.write, keylog_path=args.keylog)
+            return _emit(a, args)
+        a = analyze_file(args.capture, max_packets=args.max_packets, keylog_path=args.keylog,
+                         keep_payload=args.keep_payload)
     except (CaptureFormatError, FileNotFoundError, PermissionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    color = sys.stdout.isatty() and not args.no_color and os.environ.get("NO_COLOR") is None
-    data = None
-    if args.html or args.json:
-        data = a.to_dict(packet_limit=args.packet_list)
-    if args.json:
-        js = json.dumps(data, default=html._json_default, indent=1)
-        if args.json == "-":
-            print(js)
-        else:
-            with open(args.json, "w", encoding="utf-8") as fh:
-                fh.write(js)
-    if args.html:
-        html.write(data, args.html)
-    if not args.quiet and args.json != "-":
-        print(text_report(a, color=color, verbose=args.verbose))
-        if args.html:
-            print(f"\nHTML report: {args.html}")
-    if args.fail_on:
-        from .findings import SEVERITY_ORDER
-        if any(SEVERITY_ORDER[f.severity] <= SEVERITY_ORDER[args.fail_on] for f in a.findings):
-            return 2
-    return 0
+    except Exception as exc:
+        from .live import LiveCaptureError
+        if isinstance(exc, LiveCaptureError):
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        raise
+    return _emit(a, args)
 
 
 if __name__ == "__main__":

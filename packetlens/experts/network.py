@@ -1,7 +1,6 @@
 """Layer 2/3 expert: IP (TTL, checksum, fragmentation), ICMP, ARP, STP, broadcast."""
 from __future__ import annotations
 
-import ipaddress
 from collections import Counter, defaultdict
 
 from ..knowledge import make
@@ -22,8 +21,9 @@ def run(ctx) -> None:
     pk = ctx.packets
     # ------------------------------------------------------------ IP --------
     weird, mcast_bad, low = [], [], []
-    bad_cks, frags = [], []
+    bad_cks = []
     src_ttls: dict[str, set] = defaultdict(set)
+    frags = [p for p in pk if "ip_fragment" in p.tags]
     for p in pk:
         if p.ip_version != 4 or p.ttl is None:
             continue
@@ -38,8 +38,6 @@ def run(ctx) -> None:
             low.append(p)
         if p.ip_checksum_ok is False:
             bad_cks.append(p)
-        if "ip_fragment" in p.tags:
-            frags.append(p)
     if weird or mcast_bad or low:
         parts = []
         if weird:
@@ -65,9 +63,14 @@ def run(ctx) -> None:
                                             f"(sources: {', '.join(sorted({p.src for p in bad_cks})[:5])}).",
                       packets=[p.no for p in bad_cks[:20]], count=len(bad_cks), ts=bad_cks[0].ts))
     if frags:
+        inc = getattr(ctx, "frag_incomplete", [])
         F.append(make("ip_fragmentation", f"{len(frags)} IP fragments observed "
-                                          f"({', '.join(sorted({f'{p.src}→{p.dst}' for p in frags})[:5])}).",
-                      packets=[p.no for p in frags[:20]], count=len(frags), ts=frags[0].ts))
+                                          f"({', '.join(sorted({f'{p.src}→{p.dst}' for p in frags})[:5])}); "
+                                          f"{ctx.frag_stats['reassembled']} datagram(s) reassembled"
+                                          + (f", {len(inc)} INCOMPLETE — a fragment was lost, so the whole datagram "
+                                             "was lost (typical for large DNS/EDNS0 answers through firewalls)." if inc else "."),
+                      packets=(inc + [p.no for p in frags])[:20], count=len(frags), ts=frags[0].ts,
+                      severity="medium" if inc else None))
 
     # ------------------------------------------------------------ ICMP ------
     icmp = [p for p in pk if "icmp" in p.layers]
@@ -205,7 +208,7 @@ def run(ctx) -> None:
                           severity="medium" if share > 40 else "low", ts=bc[0].ts))
 
     # ---------------------------------------------------------- APIPA -------
-    apipa = sorted({p.src for p in pk if p.src and p.ip_version == 4 and ipaddress.IPv4Address(p.src).is_link_local})
+    apipa = sorted({p.src for p in pk if p.ip_version == 4 and p.src.startswith("169.254.")})
     if apipa:
         F.append(make("dhcp_apipa", f"Hosts using link-local addresses: {', '.join(apipa[:10])}.",
                       entities=apipa, ts=next(p.ts for p in pk if p.src in apipa)))

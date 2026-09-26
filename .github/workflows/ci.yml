@@ -6,10 +6,13 @@ jobs:
     strategy:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
+        extras: ["none", "dev"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - if: matrix.extras == 'dev'
+        run: pip install ".[dev]"
       - run: python -m unittest discover -s tests -v
       - run: python -m packetlens demo --out demo.pcapng --html demo.html

@@ -123,7 +123,7 @@ def _client_hello(b: bytes) -> dict:
     sv = [v for v in ng(sup_versions)]
     max_ver = max(sv) if sv else ver
     return {"version": VERSIONS.get(ver, hex(ver)), "max_version": VERSIONS.get(max_ver, hex(max_ver)),
-            "max_version_num": max_ver, "sni": sni, "alpn": alpn, "ciphers": ciphers,
+            "max_version_num": max_ver, "sni": sni, "random": b[2:34].hex(), "alpn": alpn, "ciphers": ciphers,
             "weak_ciphers": [WEAK_CIPHERS[c] for c in ciphers if c in WEAK_CIPHERS],
             "ja3": ja3, "ja3_str": ja3_str, "known_bad": KNOWN_BAD_JA3.get(ja3)}
 
@@ -134,11 +134,14 @@ def _server_hello(b: bytes) -> dict:
     off += 1 + b[off]
     cipher = struct.unpack("!H", b[off:off + 2])[0]
     off += 3
+    alpn = None
     for et, ed in _exts(b, off):
         if et == 43 and len(ed) == 2:
             ver = struct.unpack("!H", ed)[0]
+        elif et == 16 and len(ed) > 3:
+            alpn = ed[3:3 + ed[2]].decode("latin-1")
     return {"version": VERSIONS.get(ver, hex(ver)), "version_num": ver, "cipher": cipher,
-            "weak_cipher": WEAK_CIPHERS.get(cipher)}
+            "weak_cipher": WEAK_CIPHERS.get(cipher), "random": b[2:34].hex(), "alpn": alpn}
 
 
 def info(d: dict) -> str:

@@ -69,9 +69,12 @@ class Gen:
         body = struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + _mac(smac) + _ip(sip) + _mac(tmac) + _ip(tip)
         self.eth(t, smac, dmac, 0x0806, body)
 
-    def save(self, path, fmt="pcapng"):
+    def save(self, path, fmt="pcapng", keylog: str | None = None):
         frames = sorted(self.frames, key=lambda x: x[0])
-        (write_pcapng if fmt == "pcapng" else write_pcap)(path, frames)
+        if fmt == "pcapng":
+            write_pcapng(path, frames, keylog=keylog)
+        else:
+            write_pcap(path, frames)
         return len(frames)
 
 
@@ -151,7 +154,7 @@ def dhcp_msg(op, xid, mac, mtype, yiaddr="0.0.0.0", server=None, router=None, dn
     return b + b"\xff"
 
 
-def client_hello(sni, version=0x0303, ciphers=(0x1301, 0xC02F, 0xC030), sup_versions=None):
+def client_hello(sni, version=0x0303, ciphers=(0x1301, 0xC02F, 0xC030), sup_versions=None, random=b"\x11" * 32):
     ext = b""
     if sni:
         sn = sni.encode()
@@ -160,14 +163,15 @@ def client_hello(sni, version=0x0303, ciphers=(0x1301, 0xC02F, 0xC030), sup_vers
     ext += struct.pack("!HHB", 11, 2, 1) + b"\x00"
     if sup_versions:
         ext += struct.pack("!HHB", 43, 1 + 2 * len(sup_versions), 2 * len(sup_versions)) + b"".join(struct.pack("!H", v) for v in sup_versions)
-    body = struct.pack("!H", version) + b"\x11" * 32 + b"\x00" + struct.pack("!H", 2 * len(ciphers)) + \
+    body = struct.pack("!H", version) + random + b"\x00" + struct.pack("!H", 2 * len(ciphers)) + \
         b"".join(struct.pack("!H", c) for c in ciphers) + b"\x01\x00" + struct.pack("!H", len(ext)) + ext
     hs = b"\x01" + len(body).to_bytes(3, "big") + body
     return struct.pack("!BHH", 22, 0x0301, len(hs)) + hs
 
 
-def server_hello(version=0x0303, cipher=0xC02F):
-    body = struct.pack("!H", version) + b"\x22" * 32 + b"\x00" + struct.pack("!HB", cipher, 0) + b"\x00\x00"
+def server_hello(version=0x0303, cipher=0xC02F, tls13=False, random=b"\x22" * 32):
+    ext = struct.pack("!HHH", 43, 2, 0x0304) if tls13 else b""
+    body = struct.pack("!H", version) + random + b"\x00" + struct.pack("!HB", cipher, 0) + struct.pack("!H", len(ext)) + ext
     hs = b"\x02" + len(body).to_bytes(3, "big") + body
     return struct.pack("!BHH", 22, version, len(hs)) + hs
 
@@ -517,5 +521,173 @@ def build_demo() -> Gen:
     return g
 
 
+def hsrp_v1(state, prio, group, vip, auth=b"cisco", op=0, hello=3, hold=10):
+    return struct.pack("!BBBBBBBB", 0, op, state, hello, hold, prio, group, 0) + auth.ljust(8, b"\x00")[:8] + _ip(vip)
+
+
+def vrrp_v2(vrid, prio, vip, interval=1):
+    b = struct.pack("!BBBBBBH", 0x21, vrid, prio, 1, 0, interval, 0) + _ip(vip) + b"\x00" * 8
+    return b[:6] + struct.pack("!H", _cks(b)) + b[8:]
+
+
+def isis_lan_hello(level, sysid_hex, circuit, area_hex, neighbors=(), mtu=1497, hold=30, auth=None):
+    hdr = bytes([0x83, 27, 1, 0, 15 if level == 1 else 16, 1, 0, 0])
+    sid = bytes.fromhex(sysid_hex)
+    tlvs = b""
+    area = bytes.fromhex(area_hex)
+    tlvs += bytes([1, len(area) + 1, len(area)]) + area
+    if neighbors:
+        nb = b"".join(_mac(m) for m in neighbors)
+        tlvs += bytes([6, len(nb)]) + nb
+    if auth:
+        tlvs += bytes([10, len(auth) + 1, 1]) + auth
+    body_len = 27 + len(tlvs)
+    pad = b""
+    while body_len + len(pad) < mtu:
+        n = min(255, mtu - body_len - len(pad) - 2)
+        if n < 0:
+            break
+        pad += bytes([8, n]) + b"\x00" * n
+    pdu = hdr + bytes([circuit]) + sid + struct.pack("!HH", hold, mtu) + bytes([64]) + sid + b"\x01" + tlvs + pad
+    return pdu
+
+
+def llc_frame(src, dst, payload, vlan=None):
+    body = b"\xfe\xfe\x03" + payload
+    hdr = _mac(dst) + _mac(src)
+    if vlan is not None:
+        hdr += struct.pack("!HH", 0x8100, vlan)
+    return hdr + struct.pack("!H", len(body)) + body
+
+
+def build_extended(g: "Gen") -> None:
+    """HSRP split brain, VRRP flapping, IS-IS adjacency faults and HTTP/2 errors."""
+    r1, r2 = "00:00:0c:07:ac:01", "00:00:0c:07:ac:02"
+    for i in range(6):                         # HSRP group 10: both routers claim Active (auth differs)
+        tt = 230.0 + i * 3
+        g.udp(tt, r1, "01:00:5e:00:00:02", "10.50.0.2", "224.0.0.2", 1985, 1985, hsrp_v1(16, 110, 10, "10.50.0.1"), ttl=1)
+        g.udp(tt + 1.5, r2, "01:00:5e:00:00:02", "10.50.0.3", "224.0.0.2", 1985, 1985,
+              hsrp_v1(16, 100, 10, "10.50.0.1", auth=b"s3cret"), ttl=1)
+    v1, v2 = "00:00:5e:00:01:14", "00:00:5e:00:01:15"
+    for i, (mac, src, prio) in enumerate([(v1, "10.60.0.2", 120), (v2, "10.60.0.3", 100), (v1, "10.60.0.2", 120),
+                                          (v2, "10.60.0.3", 100), (v1, "10.60.0.2", 120)]):
+        for k in range(3):                     # VRRP group 20: master keeps changing
+            g.ipv4(250.0 + i * 5 + k, mac, "01:00:5e:00:00:12", src, "224.0.0.18", 112, vrrp_v2(20, prio, "10.60.0.1"), ttl=255)
+    a, b = "00:00:0c:15:00:01", "00:00:0c:15:00:02"
+    c3, c4 = "00:00:0c:15:00:03", "00:00:0c:15:00:04"
+    for i in range(3):                         # IS-IS VLAN 100: MTU mismatch + one-way; VLAN 200: circuit type mismatch
+        tt = 280.0 + i * 10
+        g.frames.append((T0 + tt, llc_frame(a, "01:80:c2:00:00:15", isis_lan_hello(2, "000000000001", 3, "490001", [], mtu=1497), 100)))
+        g.frames.append((T0 + tt + 1, llc_frame(b, "01:80:c2:00:00:15", isis_lan_hello(2, "000000000002", 3, "490001", [a], mtu=1397), 100)))
+        g.frames.append((T0 + tt + 2, llc_frame(c3, "01:80:c2:00:00:14", isis_lan_hello(1, "000000000003", 1, "490002", mtu=600), 200)))
+        g.frames.append((T0 + tt + 3, llc_frame(c4, "01:80:c2:00:00:15", isis_lan_hello(2, "000000000004", 2, "490003", mtu=600), 200)))
+    try:                                        # HTTP/2 (h2c) with a 503 and GOAWAY ENHANCE_YOUR_CALM
+        import h2.config
+        import h2.connection
+        import h2.errors
+    except ImportError:
+        return
+    cli = h2.connection.H2Connection(h2.config.H2Configuration(client_side=True))
+    srv = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False))
+    cli.initiate_connection()
+    for path in ("/api/items", "/api/checkout"):
+        cli.send_headers(cli.get_next_available_stream_id(), [(":method", "GET"), (":path", path), (":authority", "shop.example"),
+                                                              (":scheme", "http"), ("user-agent", "demo-h2")], end_stream=True)
+    c2s = cli.data_to_send()
+    srv.initiate_connection()
+    srv.receive_data(c2s)
+    srv.send_headers(1, [(":status", "200")])
+    srv.send_data(1, b"{}" * 700, end_stream=True)
+    srv.send_headers(3, [(":status", "503")], end_stream=True)
+    srv.close_connection(error_code=h2.errors.ErrorCodes.ENHANCE_YOUR_CALM, additional_data=b"too many streams")
+    s2c = srv.data_to_send()
+    c = Conv(g, "00:50:56:00:01:20", GW_MAC, "10.0.1.20", "10.0.2.60", 50020, 8080, ttl_s=63)
+    t = c.handshake(300.0, rtt_s=0.002)
+    half = len(c2s) // 2 + 5                  # request split mid-frame across two segments
+    c.c(t + 0.001, 0x18, c2s[:half])
+    c.c(t + 0.002, 0x18, c2s[half:])
+    c.s(t + 0.040, 0x18, s2c[:900])
+    c.s(t + 0.041, 0x18, s2c[900:])
+    c.c(t + 0.042, 0x10)
+
+
+# ------------------------------------------------------- TLS encryption ----
+def tls13_record(secret: bytes, seq: int, inner: int, plaintext: bytes, hname="sha256", klen=16) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from .tlsdecrypt import _xor_nonce, hkdf_expand_label
+    key = hkdf_expand_label(hname, secret, "key", b"", klen)
+    iv = hkdf_expand_label(hname, secret, "iv", b"", 12)
+    body = plaintext + bytes([inner])
+    hdr = struct.pack("!BHH", 23, 0x0303, len(body) + 16)
+    return hdr + AESGCM(key).encrypt(_xor_nonce(iv, seq), body, hdr)
+
+
+def tls12_keys(master: bytes, client_random: bytes, server_random: bytes, klen=16):
+    from .tlsdecrypt import prf12
+    kb = prf12("sha256", master, b"key expansion", server_random + client_random, 2 * klen + 8)
+    return (kb[:klen], kb[2 * klen:2 * klen + 4]), (kb[klen:2 * klen], kb[2 * klen + 4:])
+
+
+def tls12_record(keys, seq: int, ctype: int, plaintext: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    key, salt = keys
+    explicit = seq.to_bytes(8, "big")
+    aad = struct.pack("!QBHH", seq, ctype, 0x0303, len(plaintext))
+    frag = explicit + AESGCM(key).encrypt(salt + explicit, plaintext, aad)
+    return struct.pack("!BHH", ctype, 0x0303, len(frag)) + frag
+
+
+def build_tls_decryptable(g: "Gen", t0: float = 320.0) -> str:
+    """One TLS 1.3 and one TLS 1.2 HTTPS session plus the NSS key log that decrypts them."""
+    import os
+    try:
+        import cryptography  # noqa: F401
+        from .tlsdecrypt import HAVE_CRYPTO
+        if not HAVE_CRYPTO:
+            return ""
+    except BaseException:
+        return ""
+    lines = []
+    # --- TLS 1.3 (TLS_AES_128_GCM_SHA256): a 502 hidden inside HTTPS
+    cr, sr = os.urandom(32), os.urandom(32)
+    sec = {k: os.urandom(32) for k in ("CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+                                       "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0")}
+    lines += [f"{k} {cr.hex()} {v.hex()}" for k, v in sec.items()]
+    c = Conv(g, "00:50:56:00:01:21", GW_MAC, "10.0.1.21", "203.0.113.30", 50030, 443, ttl_s=54)
+    t = c.handshake(t0, rtt_s=0.020)
+    c.c(t + 0.001, 0x18, client_hello("api.secure.example", 0x0303, (0x1301,), sup_versions=[0x0304], random=cr))
+    c.s(t + 0.022, 0x18, server_hello(0x0303, 0x1301, tls13=True, random=sr)
+        + tls13_record(sec["SERVER_HANDSHAKE_TRAFFIC_SECRET"], 0, 22, b"\x08\x00\x00\x02\x00\x00")
+        + tls13_record(sec["SERVER_HANDSHAKE_TRAFFIC_SECRET"], 1, 22, b"\x14\x00\x00\x20" + b"f" * 32))
+    c.c(t + 0.023, 0x18, tls13_record(sec["CLIENT_HANDSHAKE_TRAFFIC_SECRET"], 0, 22, b"\x14\x00\x00\x20" + b"c" * 32)
+        + tls13_record(sec["CLIENT_TRAFFIC_SECRET_0"], 0, 23,
+                       http_req("GET", "api.secure.example", "/v2/orders?id=42", extra="Authorization: Bearer abc123\r\n")))
+    body = b"<h1>502 Bad Gateway</h1>upstream connect error"
+    c.s(t + 0.300, 0x18, tls13_record(sec["SERVER_TRAFFIC_SECRET_0"], 0, 23, http_resp(502, "Bad Gateway", body)))
+    c.c(t + 0.301, 0x10)
+    c.close(t + 0.4)
+    # --- TLS 1.2 (ECDHE-RSA-AES128-GCM-SHA256)
+    cr, sr, master = os.urandom(32), os.urandom(32), os.urandom(48)
+    lines.append(f"CLIENT_RANDOM {cr.hex()} {master.hex()}")
+    ck, sk = tls12_keys(master, cr, sr)
+    c = Conv(g, "00:50:56:00:01:21", GW_MAC, "10.0.1.21", "203.0.113.31", 50031, 443, ttl_s=54)
+    t = c.handshake(t0 + 2, rtt_s=0.020)
+    c.c(t + 0.001, 0x18, client_hello("shop.secure.example", 0x0303, (0xC02F,), random=cr))
+    c.s(t + 0.022, 0x18, server_hello(0x0303, 0xC02F, random=sr))
+    ccs = struct.pack("!BHHB", 20, 0x0303, 1, 1)
+    c.c(t + 0.024, 0x18, ccs + tls12_record(ck, 0, 22, b"\x14\x00\x00\x0c" + b"c" * 12))
+    c.s(t + 0.045, 0x18, ccs + tls12_record(sk, 0, 22, b"\x14\x00\x00\x0c" + b"s" * 12))
+    req = http_req("POST", "shop.secure.example", "/cart/checkout")
+    c.c(t + 0.046, 0x18, tls12_record(ck, 1, 23, req[:30]))          # request split over two records
+    c.c(t + 0.047, 0x18, tls12_record(ck, 2, 23, req[30:]))
+    c.s(t + 0.070, 0x18, tls12_record(sk, 1, 23, http_resp(200, "OK", b'{"ok":true}', "application/json")))
+    c.c(t + 0.071, 0x10)
+    c.close(t + 0.2)
+    return "\n".join(lines) + "\n"
+
+
 def write_demo(path: str, fmt: str = "pcapng") -> int:
-    return build_demo().save(path, fmt)
+    g = build_demo()
+    build_extended(g)
+    keylog = build_tls_decryptable(g)        # keys embedded in the pcapng (Decryption Secrets Block)
+    return g.save(path, fmt, keylog=keylog or None)

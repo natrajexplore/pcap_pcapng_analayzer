@@ -7,14 +7,18 @@ from collections import Counter, defaultdict
 
 from . import __version__
 from .correlate import correlate
-from .decode import dissect
+from .decode import decode_reassembled, dissect
 from .experts import dhcp, dns, network, routing, security, tcp, web
 from .findings import SEVERITY_ORDER, sort_findings
 from .flows import FlowTracker
+from .reassembly import Reassembler
 from .reader import open_capture
+from .tlsdecrypt import HAVE_CRYPTO, KeyLog
+
+MZ_STUB = b"This program cannot be run in DOS mode"
 
 BAD_TCP_IGNORE = {"window_update", "keep_alive", "keep_alive_ack"}
-ROUTING_PROTOS = {"OSPF", "EIGRP", "BGP", "RIP", "STP", "VRRP", "PIM", "IGMP"}
+ROUTING_PROTOS = {"OSPF", "EIGRP", "BGP", "RIP", "STP", "VRRP", "HSRP", "ISIS", "PIM", "IGMP"}
 
 
 def color_rule(p) -> str:
@@ -34,7 +38,7 @@ def color_rule(p) -> str:
         return "fin"
     if "tls" in p.layers and ("client_hello" in p.layers["tls"] or "server_hello" in p.layers["tls"]):
         return "tls"
-    if "http" in p.layers:
+    if "http" in p.layers or "http2" in p.layers:
         return "http"
     if "dns" in p.layers:
         rc = p.layers["dns"]["rcode"]
@@ -57,8 +61,12 @@ def color_rule(p) -> str:
 class Analysis:
     """Holds everything learned about one capture."""
 
-    def __init__(self, source: str):
+    def __init__(self, source: str, keylog: KeyLog | None = None, keep_payload: bool = False):
         self.source = source
+        self.keylog = keylog
+        self.keep_payload = keep_payload
+        self.tls_decrypt: dict = {}
+        self.reassembly: dict = {}
         self.packets: list = []
         self.flows = FlowTracker()
         self.findings: list = []
@@ -76,6 +84,8 @@ class Analysis:
         self.routing: dict = {}
         self.capture_point = None
         self.scanners: set = set()
+        self._frags: dict = {}
+        self.frag_stats = {"reassembled": 0, "incomplete": 0}
         self.t0 = 0.0
         self._by_no: dict = {}
         self.elapsed = 0.0
@@ -83,9 +93,32 @@ class Analysis:
     def pkt(self, no):
         return self._by_no.get(no)
 
+    def _fragment(self, p) -> None:
+        """IPv4/IPv6 fragment reassembly; the datagram is decoded on the fragment that completes it."""
+        key, off, more, data, proto = p.frag
+        p.frag = None
+        d = self._frags.setdefault(key, {"parts": {}, "total": None, "first": p.no, "ts": p.ts})
+        d["parts"][off] = data
+        if not more:
+            d["total"] = off + len(data)
+        if d["total"] is None:
+            return
+        buf, pos = bytearray(), 0
+        for o in sorted(d["parts"]):
+            if o > pos:
+                return                          # hole: still waiting for a fragment
+            buf += d["parts"][o][pos - o:]
+            pos = max(pos, o + len(d["parts"][o]))
+        if pos < d["total"]:
+            return
+        del self._frags[key]
+        self.frag_stats["reassembled"] += 1
+        decode_reassembled(p, proto, bytes(buf[:d["total"]]))
+
     # ------------------------------------------------------------------------
     def run(self, frames, max_packets: int | None = None) -> "Analysis":
         start = time.time()
+        reasm = Reassembler(self.keylog)
         for i, fr in enumerate(frames, 1):
             if max_packets and i > max_packets:
                 self.warnings.append(f"Stopped after {max_packets} packets (--max-packets)")
@@ -94,9 +127,39 @@ class Analysis:
             if i == 1:
                 self.t0 = p.ts
             p.rel_ts = p.ts - self.t0
+            if p.frag is not None:
+                self._fragment(p)
             self.flows.add(p)
+            if p.tcp is not None:
+                st = self.flows.streams[p.tcp.stream]
+                reasm.feed(p, p.src == st.client and p.sport == st.cport)
+            if p.payload:
+                if MZ_STUB in p.payload:
+                    p.tags.append("mz_stub")
+                if b"${jndi:" in p.payload.lower():
+                    p.tags.append("jndi")
+                if not self.keep_payload:
+                    p.payload = b""        # consumed: keep memory flat on large captures
             self.packets.append(p)
             self._by_no[i] = p
+        for p in self.packets:              # stream application label after reassembly
+            if p.tcp is not None and p.protocol != "TCP":
+                st = self.flows.streams[p.tcp.stream]
+                if st.app == "TCP" or st.app in ("SMB", "SSH") and p.protocol in ("TLS", "HTTP", "HTTP2"):
+                    st.app = p.protocol
+        self.frag_stats["incomplete"] = len(self._frags)
+        self.frag_incomplete = [v["first"] for v in self._frags.values()]
+        self._frags = {}
+        self.reassembly = {**reasm.stats, **{f"ip_{k}": v for k, v in self.frag_stats.items()}}
+        self.tls_decrypt = reasm.sessions_summary()
+        if self.keylog is not None and len(self.keylog):
+            n = sum(1 for s in self.tls_decrypt.values() if s["records"])
+            if not HAVE_CRYPTO:
+                self.warnings.append("Key log supplied but the 'cryptography' package is not installed; "
+                                     "TLS sessions were matched but not decrypted (pip install cryptography).")
+            elif self.tls_decrypt and not n:
+                self.warnings.append("Key log supplied but no TLS session could be decrypted "
+                                     "(key log does not match this capture, or unsupported cipher suites).")
         self.scanners = security.detect_scanners(self)
         sliced = sum(1 for p in self.packets if "sliced" in p.tags)
         if sliced:
@@ -195,7 +258,10 @@ class Analysis:
         return {
             "meta": {"tool": "PacketLens", "version": __version__, "source": os.path.basename(self.source),
                      "generated": time.strftime("%Y-%m-%d %H:%M:%S"), "analysis_seconds": round(self.elapsed, 3),
-                     "capture_point": self.capture_point, "warnings": self.warnings},
+                     "capture_point": self.capture_point, "warnings": self.warnings,
+                     "reassembly": self.reassembly,
+                     "tls_decrypted_sessions": sum(1 for x in self.tls_decrypt.values() if x["records"]),
+                     "keylog_entries": len(self.keylog) if self.keylog is not None else 0},
             "stats": self.stats(),
             "root_causes": [r.to_dict() for r in self.root_causes],
             "findings": [f.to_dict() for f in self.findings],
@@ -227,8 +293,30 @@ class Analysis:
                 "win": p.tcp.calc_window if p.tcp else None, "bif": p.tcp.bytes_in_flight if p.tcp else None}
 
 
-def analyze_file(path: str, max_packets: int | None = None) -> Analysis:
-    return Analysis(path).run(open_capture(path), max_packets=max_packets)
+def analyze_file(path, max_packets: int | None = None, keylog_path: str | None = None,
+                 keep_payload: bool = False, keylog_text: str | None = None, name: str | None = None) -> Analysis:
+    """Analyze a capture (path or binary file object). TLS secrets come from ``keylog_path`` /
+    ``keylog_text`` and/or Decryption Secrets Blocks embedded in the pcapng."""
+    embedded: list = []
+    frames = open_capture(path, secrets=embedded)
+    kl = KeyLog()
+    if keylog_path:
+        kl.load_file(keylog_path)
+    if keylog_text:
+        kl.load_text(keylog_text)
+
+    class _Lazy:   # DSBs precede the packets they unlock, so merge them as the reader finds them
+        def __iter__(self_inner):
+            for fr in frames:
+                while embedded:
+                    kl.load_text(embedded.pop())
+                yield fr
+
+    a = Analysis(name or (path if isinstance(path, str) else "capture"), keylog=kl, keep_payload=keep_payload)
+    a.run(_Lazy(), max_packets=max_packets)
+    if not len(kl):
+        a.keylog = None
+    return a
 
 
 def worst_severity(a: Analysis) -> str | None:

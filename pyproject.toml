@@ -4,13 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "packetlens"
-version = "1.0.0"
+version = "1.1.0"
 description = "Modern pcap/pcapng network analyzer with cross-protocol root-cause correlation, per-perspective explanations and remediation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []
-keywords = ["pcap", "pcapng", "wireshark", "network", "tcp", "dns", "dhcp", "bgp", "ospf", "eigrp", "rip", "troubleshooting"]
+
+[project.optional-dependencies]
+# TLS decryption (AES-GCM / ChaCha20-Poly1305) and HTTP/2 header (HPACK) decoding
+full = ["cryptography>=3.4", "hpack>=4"]
+dev = ["cryptography>=3.4", "hpack>=4", "h2>=4"]
+keywords = ["pcap", "pcapng", "wireshark", "network", "tcp", "tls", "http2", "dns", "dhcp", "bgp", "ospf", "eigrp", "rip", "isis", "hsrp", "vrrp", "troubleshooting"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: System :: Networking :: Monitoring",

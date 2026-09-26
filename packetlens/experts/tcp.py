@@ -70,12 +70,14 @@ def run(ctx) -> None:
         worst = sorted(streams, key=lambda s: -s.count("spurious_retransmission"))[:5]
         F.append(make("tcp_spurious_retrans", f"{sp} spurious retransmissions (data already ACKed).", count=sp,
                       packets=[n for s in worst for n in _pkts(s, "spurious_retransmission", limit=5)], ts=worst[0].first_ts))
-    lost = sum(s.count("lost_segment") for s in streams)
-    unseen = sum(s.count("ack_unseen") for s in streams)
+    # scanners craft packets with arbitrary seq/ack numbers: they say nothing about capture quality
+    real = [s for s in streams if s.client not in ctx.scanners]
+    lost = sum(s.count("lost_segment") for s in real)
+    unseen = sum(s.count("ack_unseen") for s in real)
     if lost or unseen:
-        worst = sorted(streams, key=lambda s: -(s.count("lost_segment") + s.count("ack_unseen")))[:5]
+        worst = sorted(real, key=lambda s: -(s.count("lost_segment") + s.count("ack_unseen")))[:5]
         verdict = ("Most gaps were later ACKed by the receiver ⇒ the CAPTURE dropped packets, not the network."
-                   if unseen >= lost else
+                   if unseen > lost and unseen >= 3 else
                    "Gaps not ACKed by the receiver ⇒ real loss upstream of the capture point is likely.")
         F.append(make("tcp_lost_segment", f"{lost} 'previous segment not captured' and {unseen} 'ACKed unseen segment' events. {verdict}",
                       count=lost + unseen, packets=[n for s in worst for n in _pkts(s, "lost_segment", "ack_unseen", limit=5)],

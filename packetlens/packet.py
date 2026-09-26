@@ -2,7 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Optional
+
+_FLAG_NAMES = [(0x02, "SYN"), (0x10, "ACK"), (0x08, "PSH"), (0x01, "FIN"),
+               (0x04, "RST"), (0x20, "URG"), (0x40, "ECE"), (0x80, "CWR")]
+
+
+@lru_cache(maxsize=256)
+def flags_to_str(flags: int) -> str:
+    return ",".join(n for b, n in _FLAG_NAMES if flags & b) or "NONE"
 
 
 @dataclass(slots=True)
@@ -38,9 +47,7 @@ class TCPInfo:
     def urg(self): return bool(self.flags & 0x20)
 
     def flag_str(self) -> str:
-        names = [(0x02, "SYN"), (0x10, "ACK"), (0x08, "PSH"), (0x01, "FIN"),
-                 (0x04, "RST"), (0x20, "URG"), (0x40, "ECE"), (0x80, "CWR")]
-        return ",".join(n for b, n in names if self.flags & b) or "NONE"
+        return flags_to_str(self.flags)
 
 
 @dataclass(slots=True)
@@ -79,6 +86,7 @@ class Packet:
     protocol: str = "UNKNOWN"      # highest decoded protocol (Wireshark "Protocol" column)
     info: str = ""                 # Wireshark-like "Info" column
     tags: list = field(default_factory=list)  # colouring rule / signature hits
+    frag: Optional[tuple] = None   # (datagram key, offset, more_fragments, bytes, l4 proto) until reassembled
 
     @property
     def is_tcp(self) -> bool: return self.tcp is not None

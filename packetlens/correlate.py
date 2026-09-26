@@ -57,7 +57,7 @@ def _by(ctx, fid):
 def correlate(ctx) -> list[RootCause]:
     out: list[RootCause] = []
     for rule in (_firewall_block, _middlebox_reset, _pmtud, _routing_impact, _bgp_transport, _ospf_adjacency,
-                 _eigrp_adjacency, _dns_impact, _dhcp_chain, _rogue_dhcp, _arp_mitm, _receiver_bottleneck,
+                 _eigrp_adjacency, _isis_adjacency, _fhrp, _dns_impact, _dhcp_chain, _rogue_dhcp, _arp_mitm, _receiver_bottleneck,
                  _loss_vs_server, _stp_l2, _attack_chain, _capture_quality):
         try:
             out.extend(rule(ctx) or [])
@@ -159,15 +159,24 @@ def _pmtud(ctx):
         if rtx:
             big_retrans.append((st, rtx[0]))
             for d in ("c2s", "s2c"):
-                orig = [e for e in full if e["dir"] == d and not e["analysis"]]
                 again = [e for e in rtx if e["dir"] == d]
-                if again and len(again) >= len(orig) and not any(e["dir"] == d and e["len"] >= mss - 40 and not e["analysis"]
-                                                                 and e["no"] > again[-1]["no"] for e in full):
+                rtx_seqs = {e["seq"] for e in st.ladder if e["dir"] == d and "retransmission" in e["analysis"]}
+                orig = [e for e in full if e["dir"] == d and "retransmission" not in e["analysis"]]
+                # black hole only if NO full-size segment ever got through: every full-size original was retransmitted
+                if again and orig and all(e["seq"] in rtx_seqs for e in orig):
                     blackholed.append((st, again[0]))
     small_ok = [st for st, _ in blackholed if st.completeness & 4]
     if frag:
         f = frag[0]
         mt = f.details.get("mtus")
+        # hosts named inside the ICMP messages; their streams' retransmissions are the loss PMTUD caused
+        hosts = {v for p in ctx.packets if "icmp" in p.layers and (p.layers["icmp"].get("original") or {})
+                 for v in (p.layers["icmp"]["original"]["src"], p.layers["icmp"]["original"]["dst"])}
+        if not big_retrans:
+            for st in ctx.flows.streams:
+                e = next((e for e in st.ladder if "retransmission" in e["analysis"] and e["len"]), None)
+                if e and st.client in hosts and st.server in hosts:
+                    big_retrans.append((st, e))
         chain = [step(ctx, f.packets[0], "Network", f"Router {', '.join(f.details['reporters'])} reports next-hop MTU {mt}")]
         for st, e in big_retrans[:3]:
             chain.append(step(ctx, e["no"], "Transport", f"Full-size segment ({e['len']} B) retransmitted on stream {st.id}"))
@@ -234,7 +243,8 @@ def _pmtud(ctx):
 
 
 ROUTING_EVENT_IDS = ("bgp_notification", "bgp_withdrawals", "eigrp_goodbye", "eigrp_sia", "eigrp_unreachable_routes",
-                     "rip_unreachable_routes", "ospf_lsu_storm", "stp_topology_change", "bgp_session_flap")
+                     "rip_unreachable_routes", "ospf_lsu_storm", "stp_topology_change", "bgp_session_flap",
+                     "fhrp_flap", "fhrp_split_brain", "isis_lsp_churn")
 IMPACT_IDS = ("icmp_unreachable", "icmp_ttl_exceeded", "tcp_syn_no_response", "tcp_retransmissions", "tcp_reset_abort")
 
 
@@ -554,3 +564,40 @@ def _capture_quality(ctx):
             [f[0].uid], [], {"network": "Not a network fault.", "application": "N/A"},
             f[0].remediation, f[0].recommendations, "capture")]
     return []
+
+
+def _isis_adjacency(ctx):
+    ids = ("isis_circuit_mismatch", "isis_area_mismatch", "isis_auth_mismatch", "isis_mtu_mismatch", "isis_one_way",
+           "isis_duplicate_sysid")
+    fs = [f for f in ctx.findings if f.id in ids]
+    if not fs:
+        return []
+    return [RootCause(
+        "isis_adjacency", "IS-IS adjacency failure", "critical", 0.9,
+        "IS-IS neighbors cannot come up because their hello parameters disagree — routes over this link are missing.",
+        "IS-IS requires a common level, (for L1) a common area, matching authentication and — because hellos are padded to "
+        "the MTU — matching MTUs. Detected: " + "; ".join(f.summary for f in fs[:4]),
+        [step(ctx, f.packets[0] if f.packets else None, "Routing", f.title) for f in fs[:5]],
+        [f.uid for f in fs], sorted({e for f in fs for e in f.entities})[:10],
+        {"routing": "No adjacency → LSDB lacks this link; SPF routes around it or not at all.",
+         "network": "An MTU mismatch also drops large data-plane frames.", "application": "Reachability issues."},
+        _dedupe(f.remediation[0] for f in fs[:6]), ["Standardize IS-IS interface templates; alert on adjacency changes"], "routing")]
+
+
+def _fhrp(ctx):
+    res = []
+    for f in _by(ctx, "fhrp_split_brain"):
+        related = [x for x in ctx.findings if x.id in ("fhrp_auth_mismatch", "fhrp_timer_mismatch", "fhrp_vip_mismatch", "arp_duplicate_ip")
+                   and set(x.entities) & set(f.entities)]
+        res.append(RootCause(
+            "fhrp_split_brain", "Two routers act as the default gateway at once (FHRP split brain)", "critical", 0.85,
+            "The redundant gateways stopped hearing each other, so both became active; hosts' traffic is split or black-holed.",
+            f.summary + " Each router only becomes active when it no longer receives the other's hellos — the layer-2 path "
+            "between them, or a parameter mismatch (" + (", ".join(x.title for x in related) or "none detected") + "), is the cause.",
+            [step(ctx, n, "Routing", "active/master claim") for n in f.packets[:3]] +
+            [step(ctx, x.packets[0] if x.packets else None, "Routing", x.title) for x in related[:3]],
+            [f.uid] + [x.uid for x in related], f.entities,
+            {"routing": "Both routers advertise the connected subnet as active.", "network": "Check the VLAN between the routers.",
+             "client": "Gateway MAC flaps in ARP caches.", "security": "Rule out a rogue router with higher priority."},
+            f.remediation + [x.remediation[0] for x in related], f.recommendations, "routing"))
+    return res

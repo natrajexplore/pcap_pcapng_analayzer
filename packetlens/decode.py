@@ -1,11 +1,11 @@
 """Layered dissector: link layer -> IP -> TCP/UDP/ICMP/routing -> application."""
 from __future__ import annotations
 
-import ipaddress
+import socket
 import struct
 
 from .packet import Packet, TCPInfo
-from .protocols import bgp, dhcp, dns, eigrp, http, l2, ospf, rip, tls
+from .protocols import bgp, dhcp, dns, eigrp, fhrp, http, isis, l2, ospf, rip, tls
 from .reader import RawFrame
 
 IP_PROTOS = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 51: "AH", 58: "ICMPv6",
@@ -72,6 +72,13 @@ def _ethernet(p: Packet, buf: bytes) -> None:
                 p.protocol = "STP"
                 p.info = l2.stp_info(d)
                 return
+        if llc[:2] == b"\xfe\xfe":
+            d = isis.parse(buf[off + 3:])
+            if d:
+                p.layers["isis"] = d
+                p.protocol = "ISIS"
+                p.info = isis.info(d)
+                return
         p.protocol = "LLC"
         return
     _ethertype(p, etype, buf[off:])
@@ -101,8 +108,8 @@ def _ip(p: Packet, buf: bytes) -> None:
         p.ip_version, p.ip_hdr_len, p.ip_len, p.ip_id, p.ttl, p.ip_proto = 4, ihl, tot, ident, ttl, proto
         p.dscp = buf[1] >> 2
         p.ip_df, p.ip_mf, p.ip_frag_offset = bool(frag & 0x4000), bool(frag & 0x2000), (frag & 0x1FFF) * 8
-        p.src = str(ipaddress.IPv4Address(buf[12:16]))
-        p.dst = str(ipaddress.IPv4Address(buf[16:20]))
+        p.src = socket.inet_ntoa(buf[12:16])
+        p.dst = socket.inet_ntoa(buf[16:20])
         cks = struct.unpack("!H", buf[10:12])[0]
         p.ip_checksum_ok = None if cks == 0 else _ones_sum(buf[:ihl]) == 0xFFFF
         p.protocol = "IPv4"
@@ -111,21 +118,23 @@ def _ip(p: Packet, buf: bytes) -> None:
         wire_l4 = tot - ihl if tot > ihl else None   # tot == 0 with TSO/GSO: fall back to captured length
         if p.ip_frag_offset or p.ip_mf:
             p.tags.append("ip_fragment")
-            if p.ip_frag_offset:
-                p.protocol = "IPv4"
-                p.info = f"Fragmented IP protocol (proto={proto}, off={p.ip_frag_offset}, ID={ident:04x})"
-                return
+            p.frag = ((4, p.src, p.dst, ident, proto), p.ip_frag_offset, p.ip_mf, payload, proto)
+            p.info = f"Fragmented IP protocol (proto={proto}, off={p.ip_frag_offset}, ID={ident:04x})"
+            return                                   # decoded when the datagram is reassembled
     elif ver == 6:
         plen, nh, hlim = struct.unpack("!HBB", buf[4:8])
         p.ip_version, p.ttl, p.ip_hdr_len = 6, hlim, 40
-        p.src = str(ipaddress.IPv6Address(buf[8:24]))
-        p.dst = str(ipaddress.IPv6Address(buf[24:40]))
+        p.src = socket.inet_ntop(socket.AF_INET6, buf[8:24])
+        p.dst = socket.inet_ntop(socket.AF_INET6, buf[24:40])
         p.ip_len = plen + 40
         p.protocol = "IPv6"
         off = 40
+        frag = None
         while nh in (0, 43, 44, 60, 51):
             if nh == 44:
                 nh2 = buf[off]
+                offm, ident = struct.unpack("!HI", buf[off + 2:off + 8])
+                frag = (offm & 0xFFF8, bool(offm & 1), ident)
                 off += 8
                 nh = nh2
                 p.tags.append("ip_fragment")
@@ -137,6 +146,11 @@ def _ip(p: Packet, buf: bytes) -> None:
         p.ip_proto = proto
         payload = buf[off:40 + plen] if plen else buf[off:]
         wire_l4 = plen + 40 - off if plen else None
+        if frag is not None:
+            p.ip_frag_offset, p.ip_mf = frag[0], frag[1]
+            p.frag = ((6, p.src, p.dst, frag[2], proto), frag[0], frag[1], payload, proto)
+            p.info = f"IPv6 fragment (proto={proto}, off={frag[0]}, ID={frag[2]:08x})"
+            return
     else:
         p.protocol = "UNKNOWN-L3"
         return
@@ -178,6 +192,12 @@ def _l4(p: Packet, proto: int, buf: bytes, wire_l4: int | None = None) -> None:
             p.layers["ospf"] = d
             p.protocol = "OSPF"
             p.info = ospf.info(d)
+    elif proto == 112:
+        d = fhrp.parse_vrrp(buf, v6=p.ip_version == 6)
+        if d:
+            p.layers["fhrp"] = d
+            p.protocol = "VRRP"
+            p.info = fhrp.info(d)
     elif proto == 88:
         d = eigrp.parse(buf)
         if d:
@@ -266,6 +286,12 @@ def _udp_app(p: Packet, payload: bytes) -> None:
         d = dhcp.parse(payload)
         if d:
             return _set(p, "dhcp", d, dhcp.info(d))
+    if 1985 in ports or 2029 in ports:
+        d = fhrp.parse_hsrp(payload)
+        if d:
+            _set(p, "fhrp", d, fhrp.info(d))
+            p.protocol = "HSRP"
+            return
     if 520 in ports:
         d = rip.parse(payload)
         if d:
@@ -278,3 +304,15 @@ def _udp_app(p: Packet, payload: bytes) -> None:
     if name:
         p.protocol = name
         p.info = f"{name} " + p.info
+
+
+def decode_reassembled(p: Packet, proto: int, data: bytes) -> None:
+    """Decode the transport/application layers of a reassembled IP datagram onto its last fragment."""
+    p.protocol = "IPv4" if p.ip_version == 4 else "IPv6"
+    p.tags.append("ip_reassembled")
+    try:
+        _l4(p, proto, data, len(data))
+    except (struct.error, IndexError, ValueError):
+        p.tags.append("malformed")
+    if p.protocol in ("IPv4", "IPv6"):
+        p.info = f"Reassembled IP datagram (proto={proto}, {len(data)} bytes)"

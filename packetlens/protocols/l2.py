@@ -17,7 +17,7 @@ ICMP6_TYPES = {1: "Destination unreachable", 2: "Packet too big", 3: "Time excee
 
 
 def mac(b: bytes) -> str:
-    return ":".join(f"{x:02x}" for x in b)
+    return b.hex(":")
 
 
 def parse_arp(buf: bytes) -> dict | None:

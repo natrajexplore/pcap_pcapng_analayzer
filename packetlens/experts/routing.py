@@ -12,6 +12,8 @@ def run(ctx) -> None:
     _ospf(ctx)
     _eigrp(ctx)
     _rip(ctx)
+    _fhrp(ctx)
+    _isis(ctx)
 
 
 # ---------------------------------------------------------------- BGP -------
@@ -350,3 +352,159 @@ def _rip(ctx) -> None:
             F.append(make("rip_update_gap", f"Router {a}: {len(big)} interval(s) > 45 s between updates (max {max(big):.0f} s; expected ~30 s).",
                           entities=[a]))
     ctx.routing["rip"] = {"routers": [{**r, "versions": sorted(r["versions"]), "responses": len(r["responses"])} for r in routers.values()]}
+
+
+# ------------------------------------------------------------ HSRP / VRRP ---
+def _fhrp(ctx) -> None:
+    F = ctx.findings
+    pk = [p for p in ctx.packets if "fhrp" in p.layers]
+    if not pk:
+        return
+    groups: dict = {}
+    for p in pk:
+        d = p.layers["fhrp"]
+        g = groups.setdefault((d["proto"], d["group"], p.vlan), {"speakers": {}, "active": [], "coups": []})
+        sp = g["speakers"].setdefault(p.src, {"address": p.src, "states": set(), "priority": set(), "timers": set(),
+                                              "vips": set(), "auth": set(), "auth_default": False, "ttl": set(),
+                                              "first_no": p.no, "packets": 0})
+        sp["states"].add(d["state"])
+        sp["priority"].add(d["priority"])
+        sp["timers"].add((d["hello"], d["hold"]))
+        if d["vip"] and d["vip"] != "0.0.0.0":
+            sp["vips"].add(d["vip"])
+        sp["auth"].add(d["auth"])
+        sp["auth_default"] |= d["auth_default"]
+        sp["ttl"].add(p.ttl)
+        sp["packets"] += 1
+        if d["state"] in ("Active", "Master") and d["priority"]:
+            g["active"].append((p.ts, p.src, p.no, d["hold"]))
+        if d["op"] in ("Coup", "Resign") or d["priority"] == 0 and d["proto"] == "VRRP":
+            g["coups"].append((p.ts, p.src, p.no, d["op"] if d["proto"] == "HSRP" else "priority 0 (resign)"))
+    out = []
+    for (proto, gid, vlan), g in groups.items():
+        name = f"{proto} group {gid}" + (f" (VLAN {vlan})" if vlan is not None else "")
+        sps = list(g["speakers"].values())
+        ents = [s["address"] for s in sps]
+        # split brain: two different speakers both active within one hold time
+        act = sorted(g["active"])
+        split = [(a, b) for a, b in zip(act, act[1:]) if a[1] != b[1] and b[0] - a[0] < max(a[3], 1)
+                 and any(c[1] == a[1] and c[0] > b[0] for c in act)]
+        if split:
+            a, b = split[0]
+            F.append(make("fhrp_split_brain", f"{name}: {a[1]} and {b[1]} both claim to be active/master at the same time "
+                                              f"({len(split)} overlapping claims).",
+                          packets=[a[2], b[2]], entities=ents, ts=b[0]))
+        transitions = [(a, b) for a, b in zip(act, act[1:]) if a[1] != b[1]]
+        if len(transitions) >= 2 and not split or g["coups"]:
+            F.append(make("fhrp_flap", f"{name}: active router changed {len(transitions)} time(s)"
+                                       + (f"; {len(g['coups'])} coup/resign messages" if g["coups"] else "") + ": "
+                                       + " → ".join(dict.fromkeys(x[1] for x in act))[:200] + ".",
+                          packets=[b[2] for _, b in transitions[:10]] + [c[2] for c in g["coups"][:10]], entities=ents,
+                          ts=(g["coups"] or [b for _, b in transitions] or [act[0]])[0][0],
+                          severity="high" if len(transitions) >= 3 else "medium"))
+        timers = {t for s_ in sps for t in s_["timers"]}
+        if len(timers) > 1:
+            F.append(make("fhrp_timer_mismatch", f"{name}: hello/hold timers differ: " +
+                          "; ".join(f"{s_['address']} {sorted(s_['timers'])}" for s_ in sps), entities=ents,
+                          packets=[s_["first_no"] for s_ in sps]))
+        vips = {v for s_ in sps for v in s_["vips"]}
+        if len(vips) > 1:
+            F.append(make("fhrp_vip_mismatch", f"{name}: routers advertise different virtual IPs: " +
+                          "; ".join(f"{s_['address']}={sorted(s_['vips'])}" for s_ in sps), entities=ents,
+                          packets=[s_["first_no"] for s_ in sps]))
+        auths = {a for s_ in sps for a in s_["auth"]}
+        if len(auths) > 1:
+            F.append(make("fhrp_auth_mismatch", f"{name}: authentication differs between routers ({len(auths)} variants) — "
+                                                "they ignore each other's hellos.", entities=ents,
+                          packets=[s_["first_no"] for s_ in sps]))
+        if any(s_["auth_default"] for s_ in sps):
+            F.append(make("fhrp_weak_auth", f"{name}: HSRP uses the default cleartext key 'cisco'.", entities=ents))
+        if proto == "VRRP" and any(t != 255 for s_ in sps for t in s_["ttl"]):
+            F.append(make("fhrp_bad_ttl", f"{name}: VRRP advertisements with TTL ≠ 255 from "
+                                          f"{', '.join(s_['address'] for s_ in sps if any(t != 255 for t in s_['ttl']))} "
+                                          "(RFC 5798 requires 255; receivers must drop them).", entities=ents))
+        out.append({"protocol": proto, "group": gid, "vlan": vlan,
+                    "speakers": [{**s_, "states": sorted(s_["states"]), "priority": sorted(s_["priority"]),
+                                  "timers": sorted(s_["timers"]), "vips": sorted(s_["vips"]),
+                                  "auth": sorted(str(a) for a in s_["auth"]), "ttl": sorted(t for t in s_["ttl"] if t is not None)}
+                                 for s_ in sps],
+                    "active_changes": len(transitions)})
+    ctx.routing["fhrp"] = out
+
+
+# ------------------------------------------------------------------ IS-IS ---
+def _isis(ctx) -> None:
+    F = ctx.findings
+    pk = [p for p in ctx.packets if "isis" in p.layers]
+    if not pk:
+        return
+    routers: dict = {}
+    sid_macs = defaultdict(set)
+    lsps = defaultdict(list)
+    purges = []
+    for p in pk:
+        d = p.layers["isis"]
+        if d["type"] in (15, 16, 17):
+            r = routers.setdefault((d["system_id"], p.vlan), {"system_id": d["system_id"], "vlan": p.vlan, "mac": p.eth_src, "circuit": set(),
+                                                    "areas": set(), "hold": set(), "auth": set(), "hello_len": set(),
+                                                    "neighbors": set(), "ips": set(), "first_no": p.no, "ts": p.ts,
+                                                    "hellos": 0, "p2p": d["type"] == 17})
+            sid_macs[d["system_id"]].add(p.eth_src)
+            r["circuit"].add(d["circuit"])
+            r["areas"].update(d["areas"])
+            r["hold"].add(d["hold"])
+            r["auth"].add(d["auth"])
+            if d.get("padded"):
+                r["hello_len"].add(d["pdu_length"])
+            r["neighbors"].update(d["neighbors"])
+            r["ips"].update(d["ip_addresses"])
+            r["hellos"] += 1
+        elif d["type"] in (18, 20):
+            lsps[d["lsp_id"]].append((p, d["seq"]))
+            if d.get("purge"):
+                purges.append(p)
+    rs = list(routers.values())
+    for i, a in enumerate(rs):
+        for b in rs[i + 1:]:
+            if a["vlan"] != b["vlan"] or a["system_id"] == b["system_id"]:
+                continue                          # only neighbours on the same segment can form an adjacency
+            pair = f"{a['system_id']} vs {b['system_id']}"
+            ev = {"packets": [a["first_no"], b["first_no"]], "ts": max(a["ts"], b["ts"]), "entities": [a["system_id"], b["system_id"]]}
+            ca, cb = set().union(*[{"L1", "L2"} if c == "L1L2" else {c} for c in a["circuit"]]), \
+                set().union(*[{"L1", "L2"} if c == "L1L2" else {c} for c in b["circuit"]])
+            common = ca & cb
+            if not common:
+                F.append(make("isis_circuit_mismatch", f"{pair}: circuit types {sorted(a['circuit'])} vs {sorted(b['circuit'])} — "
+                                                       "no common level, no adjacency.", **ev))
+            elif common == {"L1"} and not (a["areas"] & b["areas"]):
+                F.append(make("isis_area_mismatch", f"{pair}: L1-only adjacency but no common area "
+                                                    f"({sorted(a['areas'])} vs {sorted(b['areas'])}).", **ev))
+            if a["auth"] != b["auth"]:
+                F.append(make("isis_auth_mismatch", f"{pair}: authentication {sorted(map(str, a['auth']))} vs "
+                                                    f"{sorted(map(str, b['auth']))}.", **ev))
+            if a["hello_len"] and b["hello_len"] and a["hello_len"] != b["hello_len"]:
+                F.append(make("isis_mtu_mismatch", f"{pair}: padded hello sizes {sorted(a['hello_len'])} vs "
+                                                   f"{sorted(b['hello_len'])} bytes — interface MTUs differ, so the larger "
+                                                   "hellos are dropped by the smaller-MTU side.", **ev))
+            if not a["p2p"] and not b["p2p"] and common:
+                for x, y in ((a, b), (b, a)):
+                    if y["mac"] and y["mac"] not in x["neighbors"] and x["mac"] in y["neighbors"]:
+                        F.append(make("isis_one_way", f"{x['system_id']} does not list {y['system_id']} ({y['mac']}) as a "
+                                                      "neighbor although it is heard — adjacency stuck in INIT.", **ev))
+    for sid, macs in sid_macs.items():
+        if len(macs) > 1:
+            F.append(make("isis_duplicate_sysid", f"System ID {sid} used by {len(macs)} devices: {', '.join(sorted(macs))}.",
+                          entities=[sid] + sorted(macs)))
+    dur = max(pk[-1].ts - pk[0].ts, 1)
+    churn = {lid: v for lid, v in lsps.items() if len({s for _, s in v}) >= 5}
+    if churn or purges:
+        F.append(make("isis_lsp_churn", (f"{len(churn)} LSP(s) regenerated ≥5 times in {dur:.0f} s "
+                                         f"({', '.join(list(churn)[:4])})" if churn else "") +
+                      (f"; {len(purges)} LSP purge(s)" if purges else "") + ".",
+                      packets=[p.no for v in churn.values() for p, _ in v[:3]][:20] + [p.no for p in purges[:5]],
+                      ts=min([v[0][0].ts for v in churn.values()] + [p.ts for p in purges])))
+    ctx.routing["isis"] = {"routers": [{**r, "circuit": sorted(r["circuit"]), "areas": sorted(r["areas"]),
+                                        "hold": sorted(r["hold"]), "auth": sorted(map(str, r["auth"])),
+                                        "hello_len": sorted(r["hello_len"]), "neighbors": sorted(r["neighbors"]),
+                                        "ips": sorted(r["ips"])} for r in rs],
+                           "lsps": len(lsps)}

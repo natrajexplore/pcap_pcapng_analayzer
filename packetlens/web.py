@@ -9,8 +9,8 @@ import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
-from .analyzer import Analysis
-from .reader import CaptureFormatError, open_capture
+from .analyzer import analyze_file
+from .reader import CaptureFormatError
 from .report import html
 
 UPLOAD_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -29,12 +29,15 @@ h1{font-size:26px;margin:0 0 6px}p{color:var(--ink-2)}
 <h1>PacketLens</h1>
 <p>Drop a <b>.pcap</b> or <b>.pcapng</b> capture. It is analyzed locally for TCP, UDP, DNS, DHCP, HTTP/URLs, TLS, ICMP, ARP, STP, BGP, OSPF, EIGRP and RIP issues, with correlated root causes, per-perspective explanations and remediation.</p>
 <label id="drop">Drop capture here or click to choose<input type="file" id="file" accept=".pcap,.pcapng,.cap" hidden></label>
+<p style="font-size:13px">Optional TLS key log (SSLKEYLOGFILE) to decrypt HTTPS: <input type="file" id="keylog" accept=".log,.txt,.keys,*/*"></p>
 <div id="status"></div>
 <p style="font-size:12px">v__VERSION__ · Nothing leaves this machine.</p>
 </main><script>
 const drop=document.getElementById('drop'), st=document.getElementById('status'), inp=document.getElementById('file');
 async function send(f){ st.textContent='Analyzing '+f.name+' ('+(f.size/1e6).toFixed(1)+' MB)…';
-  try{ const r=await fetch('/analyze?name='+encodeURIComponent(f.name),{method:'POST',body:f,headers:{'Content-Type':'application/octet-stream'}});
+  const kf=document.getElementById('keylog').files[0]; const kb=kf?new Uint8Array(await kf.arrayBuffer()):new Uint8Array(0);
+  try{ const r=await fetch('/analyze?name='+encodeURIComponent(f.name),{method:'POST',body:new Blob([kb,f]),
+      headers:{'Content-Type':'application/octet-stream','X-Keylog-Length':String(kb.length)}});
     const t=await r.text(); if(!r.ok){ st.textContent='Error: '+t; return; }
     document.open(); document.write(t); document.close(); }catch(e){ st.textContent='Error: '+e; } }
 inp.onchange=()=>inp.files[0]&&send(inp.files[0]);
@@ -78,7 +81,13 @@ def make_handler(max_mb: int):
                 from urllib.parse import parse_qs, urlparse
                 name = parse_qs(urlparse(self.path).query).get("name", [name])[0]
             try:
-                a = Analysis(name).run(open_capture(io.BytesIO(raw)))
+                klen = int(self.headers.get("X-Keylog-Length") or 0)
+            except ValueError:
+                klen = 0
+            klen = max(0, min(klen, len(raw)))
+            keylog, raw = raw[:klen].decode("utf-8", "replace"), raw[klen:]
+            try:
+                a = analyze_file(io.BytesIO(raw), keylog_text=keylog or None, name=name)
             except CaptureFormatError as exc:
                 return self._send(400, str(exc), "text/plain")
             self._send(200, html.render(a.to_dict()))

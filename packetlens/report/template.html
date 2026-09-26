@@ -388,7 +388,7 @@ R.web = el => {
     {k:"offered",t:"Offered"},{k:"negotiated",t:"Negotiated",f:(v,r)=>v?((r.negotiated_num||0)<0x0303?`<span class="sev medium">${esc(v)}</span>`:esc(v)):'<span class="sev high">no ServerHello</span>'},
     {k:"cipher",t:"Cipher",mono:1,f:(v,r)=>r.weak_selected?`<span class="sev high">${esc(r.weak_selected)}</span>`:esc(v||"—")},
     {k:"alpn",t:"ALPN",f:v=>esc((v||[]).join(","))},{k:"handshake_ms",t:"Hello RTT",num:1,f:ms},
-    {k:"alert",t:"Alert",f:v=>v?`<span class="sev ${v.level==="fatal"?"critical":"medium"}">${esc(v.description)}</span>`:""},{k:"ja3",t:"JA3",mono:1,f:(v,r)=>`<span class="small">${esc(v)}</span>${r.known_bad?` <span class="sev critical">${esc(r.known_bad)}</span>`:""}`}], D.tls);
+    {k:"alert",t:"Alert",f:v=>v?`<span class="sev ${v.level==="fatal"?"critical":"medium"}">${esc(v.description)}</span>`:""},{k:"decryption",t:"Decryption",f:v=>v==null?'<span class="muted">no key log</span>':/^decrypted/.test(v)?`<span class="sev info">${esc(v)}</span>`:`<span class="muted">${esc(v)}</span>`},{k:"ja3",t:"JA3",mono:1,f:(v,r)=>`<span class="small">${esc(v)}</span>${r.known_bad?` <span class="sev critical">${esc(r.known_bad)}</span>`:""}`}], D.tls);
 };
 
 /* ---------- Routing ---------- */
@@ -398,7 +398,15 @@ R.routing = el => {
   if(r.ospf){ h += `<h2>OSPF routers</h2><div id="ospf-t"></div><h3>OSPF packets</h3><div id="ospf-ev"></div>`; }
   if(r.eigrp){ h += `<h2>EIGRP neighbors</h2><div id="eigrp-t"></div><h3>EIGRP packets</h3><div id="eigrp-ev"></div>`; }
   if(r.rip){ h += `<h2>RIP routers</h2><div id="rip-t"></div>`; }
-  el.innerHTML = h || '<div class="card empty">No BGP, OSPF, EIGRP or RIP traffic in this capture.</div>';
+  if(r.isis){ h += `<h2>IS-IS routers</h2><div id="isis-t"></div>`; }
+  if(r.fhrp&&r.fhrp.length){ h += `<h2>First-hop redundancy (HSRP / VRRP)</h2><div id="fhrp-t"></div>`; }
+  el.innerHTML = h || '<div class="card empty">No BGP, OSPF, EIGRP, RIP, IS-IS, HSRP or VRRP traffic in this capture.</div>';
+  if(r.isis){ table($("#isis-t",el), [{k:"system_id",t:"System ID",mono:1},{k:"vlan",t:"VLAN",num:1},{k:"mac",t:"MAC",mono:1},{k:"circuit",t:"Circuit",f:v=>esc(v.join(","))},
+      {k:"areas",t:"Areas",mono:1,f:v=>esc(v.join(", "))},{k:"hold",t:"Hold",f:v=>esc(v.join(","))},{k:"hello_len",t:"Padded hello (≈MTU)",f:v=>esc(v.join(",")||"—")},
+      {k:"auth",t:"Auth",f:v=>esc(v.join(","))},{k:"neighbors",t:"Neighbors listed",mono:1,f:v=>esc(v.join(", ")||"none")},{k:"hellos",t:"Hellos",num:1}], r.isis.routers, {search:false}); }
+  if(r.fhrp&&r.fhrp.length){ table($("#fhrp-t",el), [{k:"protocol",t:"Protocol"},{k:"group",t:"Group",num:1},{k:"vlan",t:"VLAN",num:1},
+      {k:"active_changes",t:"Active changes",num:1,f:v=>v>1?`<span class="sev high">${v}</span>`:v},
+      {k:"speakers",t:"Routers (state · priority · timers · VIP · auth)",mono:1,f:v=>v.map(s=>`${esc(s.address)} · ${esc(s.states.join("/"))} · ${esc(s.priority.join("/"))} · ${esc(s.timers.map(t=>t.join("/")).join(","))} · ${esc(s.vips.join(","))} · ${esc(s.auth.join(","))}`).join("<br>")}], r.fhrp, {search:false}); }
   if(r.bgp&&r.bgp.length){
     table($("#bgp-t",el), [{k:"peers",t:"Peers",mono:1,f:v=>esc(v.join(" ↔ "))},{k:"state",t:"Last state",f:v=>v==="Established"?esc(v):`<span class="sev high">${esc(v)}</span>`},
       {k:"as",t:"AS",mono:1,f:v=>esc(Object.entries(v).map(([k,a])=>k+"=AS"+a).join(", "))},{k:"hold",t:"Hold time",mono:1,f:v=>esc(Object.entries(v).map(([k,a])=>k+"="+a+"s").join(", "))},
