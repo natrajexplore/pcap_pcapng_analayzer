@@ -198,6 +198,9 @@ class Net:
             f = self.faults.get(("node", j))
             if j == b:
                 return t, reply
+            if n["kind"] in ("host", "server"):          # an end host never forwards traffic that is not addressed to it
+                self._event(t, p, j, j, "drop", f"{n['name']} discards a packet not addressed to it")
+                return None, reply
             if n["kind"] != "router":
                 i = j
                 continue
@@ -742,6 +745,14 @@ def simulate(traffic="http", fault="none", where=None, routers=3, switch=True, c
         f = {"kind": fault, "rate": float(loss_rate), "ms": float(latency_ms), "proto": None}
         if fault == "dhcp_no_offer":
             w = net.nodes[router_idx[0]]["id"]
+        if fault == "routing_loop":
+            # a loop is two routers pointing at each other: the faulty router sends traffic back to its upstream router
+            if len(router_idx) < 2:
+                raise ValueError("a routing loop needs at least 2 routers on the path")
+            if net.idx(w) == router_idx[0]:
+                w = net.nodes[router_idx[1]]["id"]
+                sim.notes.append(f"Loop placed on {net.nodes[router_idx[1]]['name']}: the first router has no upstream "
+                                 "router to loop with")
         net.faults[("node", net.idx(w))] = f
         where = w
     elif kind == "link":

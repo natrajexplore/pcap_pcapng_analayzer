@@ -25,7 +25,9 @@ from ..decode import dissect
 from ..reader import CaptureFormatError, write_pcapng
 from ..report import html
 from ..report.html import THREE_JS, _json_default
+from ..dfilter import FilterError, field_names
 from .library import Library, capture_view, summary
+from .workbench import Workbench
 
 STATIC = Path(__file__).with_name("static")
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
@@ -36,6 +38,7 @@ LIVE_BUFFER = 50000
 class State:
     def __init__(self, library: str | None):
         self.lib = Library(library)
+        self.wb = Workbench(self.lib)
         self.sims: dict[str, dict] = {}          # id -> {"pcap": bytes, "key": library cache key}
         self.live: dict[str, dict] = {}
 
@@ -114,6 +117,8 @@ def make_handler(state: State):
                         return self._error(404, "unknown simulation")
                     return self._send(200, s["pcap"], "application/vnd.tcpdump.pcap",
                                       {"Content-Disposition": f'attachment; filename="packetlens-sim-{q["id"][:8]}.pcapng"'})
+                if u.path.startswith("/api/pkt/"):
+                    return self._pkt(u.path[len("/api/pkt/"):], q)
                 if u.path == "/api/live/interfaces":
                     return self._json({"interfaces": live.interfaces(), "platform": os.name})
                 if u.path == "/api/live/stream":
@@ -134,6 +139,37 @@ def make_handler(state: State):
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
             return self._send(200, p.read_bytes(), ctype)
+
+        def _pkt(self, what: str, q: dict):
+            """Packet workbench API (the Analyze tab)."""
+            key = q.get("id", "")
+            flt = q.get("filter", "")
+            marked = frozenset(int(x) for x in q.get("marked", "").split(",") if x.strip().isdigit())
+            wb = state.wb
+            try:
+                if what == "fields":
+                    return self._json({"fields": field_names()})
+                if what == "list":
+                    return self._json(wb.page(key, flt, max(0, int(q.get("offset", 0))), min(1000, int(q.get("limit", 200))), marked))
+                if what == "detail":
+                    return self._json(wb.detail(key, int(q["no"])))
+                if what == "find":
+                    return self._json(wb.index_of(key, flt, int(q["no"]), marked))
+                if what == "follow":
+                    return self._json(wb.follow(key, int(q["no"]), q.get("proto", "tcp")))
+                if what == "stats":
+                    iv = float(q["interval"]) if q.get("interval") else None
+                    return self._json(wb.stats(key, q.get("kind", "hierarchy"), flt, marked, iv))
+                if what == "export":
+                    nos = sorted(marked) if q.get("only") == "marked" else wb.matching(key, flt, marked)
+                    name = os.path.splitext(os.path.basename(key.split(":")[-1]))[0] or "capture"
+                    return self._send(200, wb.export(key, nos), "application/vnd.tcpdump.pcap",
+                                      {"Content-Disposition": f'attachment; filename="{name}-filtered.pcapng"'})
+                return self._error(404, "unknown packet API")
+            except FilterError as exc:
+                return self._json({"error": str(exc), "filter_error": True}, 400)
+            except KeyError as exc:
+                return self._error(400, f"missing or unknown value: {exc}")
 
         def _analysis(self, key: str) -> Analysis:
             return state.lib.get(key)          # cached simulations/uploads/live captures, or a library file
@@ -175,12 +211,12 @@ def make_handler(state: State):
             sid = uuid.uuid4().hex
             a = analyze_file(io.BytesIO(data), name=f"simulation-{sid[:8]}.pcapng")
             key = f"sim:{sid}"
-            state.lib.put(key, a)
+            state.lib.put(key, a, data)
             state.sims[sid] = {"pcap": data}
             if len(state.sims) > 50:                            # keep memory bounded
                 old = next(iter(state.sims))
                 state.sims.pop(old)
-                state.lib.cache.pop(f"sim:{old}", None)
+                state.lib.drop(f"sim:{old}")
             ids = {f.id for f in a.findings}
             detected = [f.id for f in a.findings if f.id in res["expected"]]
             return self._json({"id": sid, "key": key, "journey": res["journey"], "topology": res["topology"],
@@ -197,7 +233,7 @@ def make_handler(state: State):
                 raise ValueError("empty upload")
             a = analyze_file(io.BytesIO(data), name=os.path.basename(name))
             key = f"upload:{uuid.uuid4().hex[:12]}:{os.path.basename(name)}"
-            state.lib.put(key, a)
+            state.lib.put(key, a, data)
             return self._json({"id": key, **summary(a)})
 
         # ------------------------------------------------------------ live ---
@@ -275,7 +311,7 @@ def make_handler(state: State):
                 data = Path(p).read_bytes()
             a = analyze_file(io.BytesIO(data), name=f"live-{lid}.pcapng")
             key = f"live:{lid}"
-            state.lib.put(key, a)
+            state.lib.put(key, a, data)
             state.sims[lid] = {"pcap": data}
             return self._json({"id": key, "pcap": lid, **summary(a)})
 

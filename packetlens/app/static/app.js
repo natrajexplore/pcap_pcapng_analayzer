@@ -23,18 +23,19 @@ function ring(h){ const r = 20, c = 2*Math.PI*r, k = Math.max(0, Math.min(100, h
 /* ---------------------------------------------------------------- routing */
 let cleanup = [];
 function onLeave(fn){ cleanup.push(fn); }
+const PL = window.PL = {api, esc, toast, onLeave, views:{}};      // shared with views in other scripts (analyze.js)
 function route(){
   cleanup.forEach(f=>{ try{ f(); }catch(e){} }); cleanup = [];
   const h = location.hash.slice(2) || "library";
   const [name, ...rest] = h.split("/"); const arg = decodeURIComponent(rest.join("/"));
   document.querySelectorAll(".views a").forEach(a=>a.classList.toggle("on", a.dataset.view === name));
   view.innerHTML = "";
-  ({library, capture, sim, live}[name] || library)(arg);
+  ({library, capture, sim, live, ...PL.views}[name] || library)(arg);
 }
 addEventListener("hashchange", route);
 $("#upload").addEventListener("change", async e=>{
   const f = e.target.files[0]; if(!f) return; toast(`Analyzing ${f.name}…`);
-  try{ const r = await api.post("/api/upload?name="+encodeURIComponent(f.name), await f.arrayBuffer(), true); location.hash = "#/capture/"+encodeURIComponent(r.id); }
+  try{ const r = await api.post("/api/upload?name="+encodeURIComponent(f.name), await f.arrayBuffer(), true); location.hash = "#/analyze/"+encodeURIComponent(r.id); }
   catch(err){ toast("Upload failed: "+err.message); } e.target.value = "";
 });
 
@@ -52,9 +53,12 @@ async function library(){
     $("#lib").innerHTML = d.folders.map(f=>`<section class="panel folder" data-q="${esc((f.name+" "+f.captures.map(c=>c.name+" "+(c.protocols||[]).join(" ")).join(" ")).toLowerCase())}">
       <h2>${esc(f.name)} <span class="chip">${f.captures.length}</span></h2>
       ${f.captures.map(c=>`<div class="cap-tile" data-id="${esc(c.id)}" tabindex="0" role="link">${ring(c.health)}<div><div class="name">${esc(c.name)}</div>
-        <div class="small muted">${c.packets!=null?`${sev(c.worst)} ${c.packets.toLocaleString()} pkts · ${c.findings} findings · ${esc(c.top)}`:"analyzing…"}</div>
-        ${(c.protocols||[]).map(p=>`<span class="chip">${esc(p)}</span>`).join("")}</div></div>`).join("")}</section>`).join("");
-    view.querySelectorAll(".cap-tile").forEach(t=>{ const go = ()=>location.hash = "#/capture/"+encodeURIComponent(t.dataset.id); t.onclick = go; t.onkeydown = e=>{ if(e.key==="Enter") go(); }; });
+        <div class="small muted">${c.packets!=null?`${sev(c.worst)} ${c.packets.toLocaleString()} pkts · ${c.findings} findings · ${esc(c.top)}`
+          : c.error ? `<span style="color:var(--red)">cannot analyze: ${esc(c.error)}</span>` : "analyzing…"}</div>
+        ${(c.protocols||[]).map(p=>`<span class="chip">${esc(p)}</span>`).join("")}
+        <a class="chip pk-link" href="#/analyze/${encodeURIComponent(c.id)}" title="Wireshark-style packet view">▤ Packets</a></div></div>`).join("")}</section>`).join("");
+    view.querySelectorAll(".cap-tile").forEach(t=>{ const go = e=>{ if(e && e.target.closest(".pk-link")) return; location.hash = "#/capture/"+encodeURIComponent(t.dataset.id); };
+      t.onclick = go; t.onkeydown = e=>{ if(e.key==="Enter") go(); }; });
     filter();
   };
   const filter = () => { const q = ($("#lib-q")||{}).value?.toLowerCase() || ""; view.querySelectorAll(".folder").forEach(s=>s.style.display = s.dataset.q.includes(q) ? "" : "none"); };
@@ -72,6 +76,7 @@ async function capture(id){
   view.innerHTML = `<div class="hero"><div>${ring(H)}</div><div><h1>${esc(d.meta.source)}</h1><div class="muted small">${d.stats.packets.toLocaleString()} packets · ${fmtT(d.stats.duration)} ·
       ${d.findings.length} findings · ${d.root_causes.length} root causes</div></div><div class="spacer"></div>
       ${d.path_folder?`<div class="row"><span class="small muted">Path:</span><button class="ghost" data-v="0">This capture</button><button class="ghost" data-v="1">Whole folder</button></div>`:""}
+      <a class="btn ghost" href="#/analyze/${encodeURIComponent(id)}">▤ Packets</a>
       <a class="btn ghost" target="_blank" rel="noopener" href="/api/report?id=${encodeURIComponent(id)}">Full report ↗</a></div>
     <div class="studio"><div><div class="stage" id="stage"><div class="hud"><button id="play">▶ Replay capture</button><button class="ghost" id="rot">Auto-rotate</button><button class="ghost" id="refit">Fit</button></div>
       <div class="legend"><span><i style="color:var(--lime);background:var(--lime)"></i>ok</span><span><i style="color:var(--amber);background:var(--amber)"></i>retransmission / warning</span>
@@ -395,5 +400,5 @@ async function live(){
 }
 
 if(!window.THREE){ view.innerHTML = '<div class="empty">three.min.js failed to load — the 3D views need it.</div>'; }
-else route();
+else addEventListener("DOMContentLoaded", route);                   // after every view script has registered
 })();

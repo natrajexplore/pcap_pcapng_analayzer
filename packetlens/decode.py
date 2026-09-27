@@ -389,9 +389,9 @@ def _udp_app(p: Packet, payload: bytes) -> None:
         d = rip.parse(payload)
         if d:
             return _set(p, "rip", d, rip.info(d))
-    if 443 in ports and payload and payload[0] & 0x80:
+    if 443 in ports and payload:                    # UDP/443 is QUIC; short-header packets carry most of the data
         p.protocol = "QUIC"
-        p.info = f"QUIC long header ({len(payload)} bytes)"
+        p.info = f"QUIC {'long' if payload[0] & 0x80 else 'short'} header ({len(payload)} bytes)"
         return
     name = WELL_KNOWN.get(p.dport) or WELL_KNOWN.get(p.sport)
     if name:

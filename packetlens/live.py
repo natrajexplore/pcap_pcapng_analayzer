@@ -38,7 +38,10 @@ def interfaces() -> list[dict]:
 def capture(interface: str = "any", duration: float | None = 10.0, count: int | None = None,
             snaplen: int = 262144, host: str | None = None, port: int | None = None,
             on_packet=None, stop=None) -> list[RawFrame]:
-    """Capture frames until ``duration`` seconds, ``count`` frames or ``stop.is_set()`` (whichever first)."""
+    """Capture frames until ``duration`` seconds, ``count`` frames or ``stop.is_set()`` (whichever first).
+
+    Frames are returned only when there is no ``on_packet`` callback: a streaming caller owns the frames
+    (and any memory cap), so they are not also accumulated here."""
     if hasattr(socket, "AF_PACKET"):
         sock, recv = _linux(interface)
     elif os.name == "nt" and hasattr(socket, "SIO_RCVALL"):
@@ -49,11 +52,12 @@ def capture(interface: str = "any", duration: float | None = 10.0, count: int | 
         sock.settimeout(0.2)
         want_host = socket.inet_aton(host) if host else None
         frames: list[RawFrame] = []
+        n = 0
         start = time.time()
         while not (stop is not None and stop.is_set()):
             if duration is not None and time.time() - start >= duration:
                 break
-            if count is not None and len(frames) >= count:
+            if count is not None and n >= count:
                 break
             try:
                 got = recv()
@@ -65,9 +69,11 @@ def capture(interface: str = "any", duration: float | None = 10.0, count: int | 
             if (want_host or port) and not _match(data, lt, want_host, port):
                 continue
             fr = RawFrame(time.time(), lt, data[:snaplen], len(data))
-            frames.append(fr)
+            n += 1
             if on_packet:
                 on_packet(fr)
+            else:
+                frames.append(fr)
         return frames
     finally:
         if os.name == "nt" and hasattr(socket, "SIO_RCVALL"):
@@ -84,7 +90,11 @@ def _linux(interface):
     except PermissionError as exc:
         raise LiveCaptureError("live capture needs root or CAP_NET_RAW (try sudo)") from exc
     if interface and interface != "any":
-        sock.bind((interface, 0))
+        try:
+            sock.bind((interface, 0))
+        except OSError as exc:
+            sock.close()
+            raise LiveCaptureError(f"cannot capture on {interface}: {exc}") from exc
 
     def recv():
         data, addr = sock.recvfrom(65535)
@@ -97,15 +107,16 @@ def _linux(interface):
 
 def _windows(interface):
     ip = interface if interface and interface != "any" else (interfaces() or [{"id": "127.0.0.1"}])[0]["id"]
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IP)
         sock.bind((ip, 0))
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
         sock.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
-    except PermissionError as exc:
-        raise LiveCaptureError("live capture on Windows needs an Administrator prompt") from exc
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 10013:
+    except OSError as exc:                                  # PermissionError is an OSError
+        if sock is not None:
+            sock.close()
+        if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) == 10013:
             raise LiveCaptureError("live capture on Windows needs an Administrator prompt") from exc
         raise LiveCaptureError(f"cannot capture on {ip}: {exc}") from exc
     return sock, lambda: (sock.recvfrom(65535)[0], LINKTYPE_RAW)

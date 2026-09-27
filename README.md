@@ -160,6 +160,13 @@ analyzes the result.
 A local web app (127.0.0.1 only, no extra dependencies) with a neon 3D view of every capture:
 
 * **Library** — every capture under the folder with its health score, worst problem and protocols.
+* **Analyze** — Wireshark-style workbench for any .pcap/.pcapng you open, drop or pick: packet list with
+  coloring rules (virtual scrolling, keyboard navigation, marking), packet details tree with exact byte
+  highlighting in the hex pane (headers; application layers map to their payload), display filters in
+  Wireshark syntax (`ip.addr == 10.0.0.0/8 && tcp.port in {80 443}`, `dns.qry.name contains "x"`,
+  `tcp.analysis.retransmission`, `frame contains "jndi"`, `!arp`) with live validation, "Apply/Prepare as
+  filter" from any field, Follow TCP/UDP stream, protocol hierarchy, conversations, endpoints, I/O graph,
+  expert info, time display formats, go-to-packet and export of the displayed or marked packets as pcapng.
 * **Capture** — the inferred source→destination path in 3D; replay every packet in capture-time order
   (timeline scrubber, speed control, drops burst where the flow broke), per-flow hop chains, findings,
   and a 3D sequence "ribbon" per TCP stream. Folders with several captures show the stitched path.

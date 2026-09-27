@@ -7,8 +7,9 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 
-from packetlens import sim, synth
+from packetlens import live, sim, synth
 from packetlens.analyzer import analyze_file
+from packetlens.app.library import Library
 from packetlens.app.server import State, make_handler
 
 TMP = tempfile.mkdtemp(prefix="packetlens-app-")
@@ -42,11 +43,53 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual((r["expected"], r["visible_frames"], r["fault_side"]), ([], 0, "before"))
         self.assertTrue(any("capture" in n for n in r["notes"]))
 
+    def test_routing_loop_needs_two_routers_and_never_wraps_past_the_client(self):
+        r, found = _run(traffic="ping", fault="routing_loop", where="r1", routers=2, switch=False)
+        self.assertEqual(r["config"]["where"], "r2")                                 # moved to a router with an upstream peer
+        self.assertFalse([e for e in r["journey"] if e["from"] == "server" or e["to"] == "server"])
+        self.assertIn("icmp_ttl_exceeded", found)
+        with self.assertRaises(ValueError):
+            sim.simulate(traffic="ping", fault="routing_loop", routers=1)
+
     def test_frames_carry_router_ttl_and_macs(self):
         r, _ = _run(traffic="ping", fault="none", routers=3, capture=4)      # R3 ↔ server
         ttls = {f[1][22] for f in r["frames"] if f[1][12:14] == b"\x08\x00" and f[1][26:30] == bytes([192, 168, 10, 50])}
         self.assertEqual(ttls, {128 - 3})                                     # client TTL 128 after three routers
         self.assertTrue(r["journey"] and all(e["status"] == "ok" for e in r["journey"]))
+
+
+class LibraryRobustnessTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="packetlens-lib-")
+        os.makedirs(os.path.join(self.root, "F"))
+        synth.write_demo(os.path.join(self.root, "F", "good.pcapng"))
+        synth.write_demo(os.path.join(self.root, "F", "good2.pcapng"))
+        with open(os.path.join(self.root, "F", "broken.pcap"), "wb") as fh:
+            fh.write(b"not a capture at all")
+
+    def test_one_corrupt_capture_does_not_break_the_library_or_its_folder(self):
+        lib = Library(self.root)
+        caps = {c["name"]: c for c in lib.listing(analyze=True)["folders"][0]["captures"]}
+        self.assertIn("error", caps["broken.pcap"])
+        self.assertGreater(caps["good.pcapng"]["packets"], 100)
+        self.assertIsNotNone(lib.folder_path("F/good.pcapng"))                        # the two healthy captures stitch
+
+    def test_symlink_outside_the_library_is_ignored(self):
+        outside = os.path.join(TMP, "outside.pcapng")
+        synth.write_demo(outside)
+        try:
+            os.symlink(outside, os.path.join(self.root, "F", "link.pcapng"))
+        except (OSError, NotImplementedError):
+            self.skipTest("creating symlinks is not permitted here")
+        lib = Library(self.root)
+        self.assertNotIn("F/link.pcapng", lib.files())
+        lib.listing(analyze=False)                                                     # must not raise
+
+
+class LiveTests(unittest.TestCase):
+    def test_bad_interface_is_a_clear_error(self):
+        with self.assertRaises(live.LiveCaptureError):
+            live.capture("no-such-interface-0", duration=0.2)
 
 
 class ApiTests(unittest.TestCase):
