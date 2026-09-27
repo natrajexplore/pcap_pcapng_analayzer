@@ -27,6 +27,8 @@ packetlens analyze https.pcapng --keylog sslkeys.log   # decrypt TLS 1.2 / 1.3
 packetlens compare client-side.pcapng server-side.pcapng   # locate loss between two capture points
 sudo packetlens live -i eth0 -d 30 --html live.html    # capture + analyze (Linux)
 packetlens serve                                   # http://127.0.0.1:8080, drop a capture in the browser
+packetlens app pcap_folder/                        # Studio: library, 3D replay, packet simulator, live capture
+packetlens batch pcap_folder/ --out reports/       # one 3D report per capture + index.html
 ```
 
 ---
@@ -153,6 +155,30 @@ It uses an `AF_PACKET` raw socket (root or `CAP_NET_RAW`, no libpcap needed), fi
 `--host` / `--port`, handles loopback duplicates, saves a Wireshark-compatible pcapng (`-w`), and
 analyzes the result.
 
+## PacketLens Studio (`packetlens app`)
+
+A local web app (127.0.0.1 only, no extra dependencies) with a neon 3D view of every capture:
+
+* **Library** — every capture under the folder with its health score, worst problem and protocols.
+* **Analyze** — Wireshark-style workbench for any .pcap/.pcapng you open, drop or pick: packet list with
+  coloring rules (virtual scrolling, keyboard navigation, marking), packet details tree with exact byte
+  highlighting in the hex pane (headers; application layers map to their payload), display filters in
+  Wireshark syntax (`ip.addr == 10.0.0.0/8 && tcp.port in {80 443}`, `dns.qry.name contains "x"`,
+  `tcp.analysis.retransmission`, `frame contains "jndi"`, `!arp`) with live validation, "Apply/Prepare as
+  filter" from any field, Follow TCP/UDP stream, protocol hierarchy, conversations, endpoints, I/O graph,
+  expert info, time display formats, go-to-packet and export of the displayed or marked packets as pcapng.
+* **Capture** — the inferred source→destination path in 3D; replay every packet in capture-time order
+  (timeline scrubber, speed control, drops burst where the flow broke), per-flow hop chains, findings,
+  and a 3D sequence "ribbon" per TCP stream. Folders with several captures show the stitched path.
+* **Simulator** — build a path (client, optional switch, 1–6 routers, server), pick traffic (HTTP, TLS,
+  ping, traceroute, DNS, DHCP), inject a fault (loss, latency, firewall drop/reject, missing route, MTU black
+  hole, routing loop, closed port, slow server, zero window, DNS/DHCP failures, rogue DHCP, TLS alert) and
+  choose the capture link. Every packet is walked hop by hop; the capture the chosen link would record is
+  analyzed and the result shows *injected vs. detected* — including when a fault is invisible from that
+  capture point. The simulated pcapng can be downloaded for Wireshark.
+* **Live** — capture and watch hosts and packets appear in 3D, then analyze. Linux: AF_PACKET (root).
+  Windows: raw IPv4 socket (`SIO_RCVALL`, Administrator prompt, IPv4 only).
+
 ## CLI
 
 ```
@@ -163,6 +189,8 @@ packetlens live    [-i IFACE] [-d SECONDS] [-c COUNT] [--host IP] [--port N] [-s
                    [--keylog FILE] [--html FILE] [...]
 packetlens demo    [--out demo.pcapng] [--html demo.html] [--format pcapng|pcap]
 packetlens serve   [--host 127.0.0.1] [--port 8080] [--max-mb 200]
+packetlens app     [FOLDER] [--port 8090] [--no-browser]
+packetlens batch   FOLDER [--out packetlens-reports] [--max-packets N]
 ```
 
 * `-v` prints the causes, perspectives, fixes and Wireshark filter for every finding.

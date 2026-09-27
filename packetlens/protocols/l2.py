@@ -13,7 +13,11 @@ UNREACH = {0: "Network unreachable", 1: "Host unreachable", 2: "Protocol unreach
            10: "Host administratively prohibited", 13: "Communication administratively prohibited"}
 ICMP6_TYPES = {1: "Destination unreachable", 2: "Packet too big", 3: "Time exceeded", 4: "Parameter problem",
                128: "Echo request", 129: "Echo reply", 133: "Router solicitation", 134: "Router advertisement",
-               135: "Neighbor solicitation", 136: "Neighbor advertisement", 137: "Redirect"}
+               135: "Neighbor solicitation", 136: "Neighbor advertisement", 137: "Redirect",
+               130: "Multicast listener query", 131: "Multicast listener report", 132: "Multicast listener done",
+               143: "Multicast listener report v2"}
+UNREACH6 = {0: "No route to destination", 1: "Communication administratively prohibited", 2: "Beyond scope of source",
+            3: "Address unreachable", 4: "Port unreachable", 5: "Source address failed policy", 6: "Reject route"}
 
 
 def mac(b: bytes) -> str:
@@ -60,6 +64,10 @@ def parse_icmp(buf: bytes, v6: bool = False) -> dict | None:
         if t in (3, 11, 12, 5, 4) and len(buf) >= 28:
             d["original"] = _embedded_ipv4(buf[8:])
     else:
+        if t == 1:
+            d["code_name"] = UNREACH6.get(c, str(c))
+        elif t == 3:
+            d["code_name"] = "Hop limit exceeded in transit" if c == 0 else "Fragment reassembly time exceeded"
         if t == 2 and len(buf) >= 8:
             d["mtu"] = struct.unpack("!I", buf[4:8])[0]
         elif t in (128, 129) and len(buf) >= 8:
@@ -67,6 +75,18 @@ def parse_icmp(buf: bytes, v6: bool = False) -> dict | None:
             d["data_len"] = len(buf) - 8
         elif t in (135, 136) and len(buf) >= 24:
             d["target"] = str(ipaddress.IPv6Address(buf[8:24]))
+            if t == 136:
+                d["router"], d["solicited"], d["override"] = bool(buf[4] & 0x80), bool(buf[4] & 0x40), bool(buf[4] & 0x20)
+            d.update(_nd_options(buf[24:]))
+        elif t == 134 and len(buf) >= 16:
+            d["hop_limit"], d["managed"], d["other"] = buf[4], bool(buf[5] & 0x80), bool(buf[5] & 0x40)
+            d["router_lifetime"] = struct.unpack("!H", buf[6:8])[0]
+            d.update(_nd_options(buf[16:]))
+        elif t == 133:
+            d.update(_nd_options(buf[8:]))
+        elif t == 143 and len(buf) >= 8:                        # MLDv2 report
+            d["groups"] = [str(ipaddress.IPv6Address(buf[off + 4:off + 20]))
+                           for off in _mld2_records(buf)]
         if t in (1, 2, 3) and len(buf) >= 48:
             ob = buf[8:]
             d["original"] = {"src": str(ipaddress.IPv6Address(ob[8:24])),
@@ -74,6 +94,35 @@ def parse_icmp(buf: bytes, v6: bool = False) -> dict | None:
                              "sport": struct.unpack("!H", ob[40:42])[0] if len(ob) >= 44 else None,
                              "dport": struct.unpack("!H", ob[42:44])[0] if len(ob) >= 44 else None}
     return d
+
+
+def _nd_options(b: bytes) -> dict:
+    """Neighbor Discovery options: link-layer address, prefix information, MTU."""
+    o: dict = {}
+    off = 0
+    while off + 8 <= len(b) and b[off + 1]:
+        t, ln = b[off], b[off + 1] * 8
+        v = b[off:off + ln]
+        if t in (1, 2) and ln >= 8:
+            o["source_lladdr" if t == 1 else "target_lladdr"] = mac(v[2:8])
+        elif t == 3 and ln >= 32:
+            o.setdefault("prefixes", []).append({
+                "prefix": f"{ipaddress.IPv6Address(v[16:32])}/{v[2]}", "on_link": bool(v[3] & 0x80),
+                "autonomous": bool(v[3] & 0x40), "valid_lifetime": struct.unpack("!I", v[4:8])[0],
+                "preferred_lifetime": struct.unpack("!I", v[8:12])[0]})
+        elif t == 5 and ln >= 8:
+            o["mtu"] = struct.unpack("!I", v[4:8])[0]
+        off += ln
+    return o
+
+
+def _mld2_records(b: bytes):
+    off = 8
+    for _ in range(struct.unpack("!H", b[6:8])[0]):
+        if off + 20 > len(b):
+            return
+        yield off
+        off += 20 + 16 * struct.unpack("!H", b[off + 2:off + 4])[0] + 4 * b[off + 1]
 
 
 def _embedded_ipv4(ob: bytes) -> dict | None:
@@ -97,6 +146,10 @@ def icmp_info(d: dict) -> str:
         s += f" MTU={d['mtu']}"
     if "seq" in d:
         s += f" id=0x{d['id']:04x} seq={d['seq']}"
+    if "target" in d:
+        s += f" for {d['target']}"
+    if d.get("prefixes"):
+        s += " prefix " + ", ".join(x["prefix"] for x in d["prefixes"])
     return s
 
 

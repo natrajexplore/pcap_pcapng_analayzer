@@ -16,6 +16,7 @@ as they are consumed (low memory use on large captures).
 from __future__ import annotations
 
 import re
+from collections import deque
 
 from .protocols import bgp, dns, http, http2, tls
 from .tlsdecrypt import TLSSession
@@ -41,6 +42,8 @@ class Framer:
         self.preface_done = False
         self.desync = False
         self.h2dec = None
+        self.peer = None             # Framer of the opposite direction (pairs HTTP responses with requests)
+        self.methods = deque(maxlen=64)   # request methods still awaiting a response
 
     # ------------------------------------------------------------------ io --
     def feed(self, data: bytes, pkt) -> list:
@@ -160,8 +163,14 @@ class Framer:
 
     def _after_http_header(self, hdr: bytes) -> None:
         m = _STATUS.match(hdr)
-        if m and (m.group(1).startswith(b"1") or m.group(1) in (b"204", b"304")):
+        if m is None:                              # request: the peer needs its method to frame the response
+            self.methods.append(hdr.split(b" ", 1)[0])
+        elif m.group(1).startswith(b"1"):          # interim response: the request is still pending
             return
+        else:
+            req = self.peer.methods.popleft() if self.peer is not None and self.peer.methods else None
+            if req == b"HEAD" or m.group(1) in (b"204", b"304"):   # Content-Length here describes no body
+                return
         if _TE.search(hdr):
             self.body = "chunked"
             return
@@ -229,6 +238,9 @@ class Reassembler:
         d = self.dirs.get(key)
         if d is None:
             d = self.dirs[key] = _Dir((p.sport, p.dport))
+            other = self.dirs.get((t.stream, not from_client))
+            if other is not None:
+                d.framer.peer, other.framer.peer = other.framer, d.framer
         if t.syn:
             d.next_seq = (t.seq + 1) & M32
             return
@@ -335,6 +347,9 @@ class Reassembler:
         if d.plain is None:
             proto = "h2" if sess.alpn == "h2" else None
             d.plain = Framer((), proto)
+            other = self.dirs.get((sid, not from_client))
+            if other is not None and other.plain is not None:
+                d.plain.peer, other.plain.peer = other.plain, d.plain
         for kind, msg, start, end in d.plain.feed(body, pkt):
             if kind == "http":
                 m = http.parse(msg + bytes(d.plain.buf[:200]) if d.plain.body else msg)
