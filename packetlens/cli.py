@@ -147,8 +147,19 @@ def main(argv=None) -> int:
     bt.add_argument("folder")
     bt.add_argument("--out", default="packetlens-reports", help="output folder (default: packetlens-reports)")
     bt.add_argument("--max-packets", type=int, default=None)
+    ap_ = sub.add_parser("app", help="run PacketLens Studio: library, 3D replay, packet simulator and live capture")
+    ap_.add_argument("folder", nargs="?", help="capture library folder (optional)")
+    ap_.add_argument("--port", type=int, default=8090)
+    ap_.add_argument("--no-browser", action="store_true", help="do not open a browser window")
     args = ap.parse_args(argv)
 
+    if args.cmd == "app":
+        from .app.server import serve as serve_app
+        if args.folder and not os.path.isdir(args.folder):
+            print(f"error: {args.folder} is not a folder", file=sys.stderr)
+            return 1
+        serve_app(args.folder, port=args.port, open_browser=not args.no_browser)
+        return 0
     if args.cmd == "batch":
         from .batch import run as run_batch
         if not os.path.isdir(args.folder):

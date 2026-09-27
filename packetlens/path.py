@@ -278,8 +278,15 @@ def _side(T: Topology, edge: dict, ip: str, frames: list, side: int) -> list:
         T.nodes[dev]["kind"] = "l3switch" if T.nodes[dev]["kind"] == "switch" else "router"
     unseen = hops - 1 if dev else hops
     if unseen > CLOUD_AFTER:
-        chain.append(T.node(f"cloud:{dev}:{_net(ip)}", "cloud", f"{unseen} routers (not visible)", observed=False,
-                            evidence=f"TTL of {ip} shows {hops} routed hops; the middle ones never touch the capture link"))
+        # one WAN cloud per gateway (not one per destination network): labelled with the range of unseen hops
+        cid = T.node(f"cloud:{dev}", "cloud", observed=False,
+                     evidence=f"TTL of {ip} shows {hops} routed hops; the middle ones never touch the capture link")
+        c = T.nodes[cid]
+        c.setdefault("hop_range", [unseen, unseen])
+        c["hop_range"] = [min(c["hop_range"][0], unseen), max(c["hop_range"][1], unseen)]
+        lo, hi = c["hop_range"]
+        c["label"] = f"WAN: {lo}{'–' + str(hi) if hi != lo else ''} routers (not visible)"
+        chain.append(cid)
     else:
         for i in range(unseen):
             chain.append(T.node(f"inferred:{dev}:{_net(ip)}:{i}", "router", f"Router (hop {i + 2 if dev else i + 1})",

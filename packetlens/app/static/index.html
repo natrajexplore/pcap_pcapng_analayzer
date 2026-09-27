@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketLens Studio</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/library"><span class="logo" aria-hidden="true"></span>PacketLens <b>Studio</b></a>
+  <nav class="views" aria-label="Views">
+    <a href="#/library" data-view="library">Library</a>
+    <a href="#/sim" data-view="sim">Simulator</a>
+    <a href="#/live" data-view="live">Live</a>
+  </nav>
+  <div class="spacer"></div>
+  <label class="upload btn ghost" title="Analyze a capture file">Open capture…<input type="file" id="upload" accept=".pcap,.pcapng,.cap" hidden></label>
+</header>
+<main id="view"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/three.min.js"></script>
+<script src="/static/scene.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -31,3 +31,4 @@ include = ["packetlens*"]
 
 [tool.setuptools.package-data]
 "packetlens.report" = ["template.html", "vendor/three.min.js", "vendor/LICENSE-three.txt"]
+"packetlens.app" = ["static/*"]
