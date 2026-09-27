@@ -96,7 +96,7 @@ def run(ctx) -> None:
     for h in tls_list:
         dec = ctx.tls_decrypt.get(h["stream"]) or {}
         h["decryption"] = (f"decrypted ({dec['records']} records)" if dec.get("records") else dec.get("status")) \
-            if ctx.keylog is not None else None
+            if ctx.keylog is not None and len(ctx.keylog) else None   # empty KeyLog = none supplied
     ctx.tls_sessions = tls_list
     if not tls_list:
         return

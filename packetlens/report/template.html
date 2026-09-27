@@ -121,6 +121,41 @@ svg text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
 .kv b{color:var(--ink-2);font-weight:500}
 .empty{padding:24px;text-align:center;color:var(--ink-2)}
 .warn{background:var(--surface-2);border-left:3px solid var(--med);padding:8px 12px;border-radius:6px;margin:8px 0}
+/* 3D path + scenarios */
+.p3{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px}
+.stage{position:relative;height:min(68vh,620px);min-height:380px;border:1px solid var(--border);border-radius:12px;background:var(--surface);overflow:hidden;touch-action:none}
+.stage canvas{display:block;width:100%!important;height:100%!important;cursor:grab}
+.stage .lbl{position:absolute;transform:translate(-50%,-135%);font-size:11.5px;white-space:nowrap;pointer-events:none;color:var(--ink);
+  background:color-mix(in srgb,var(--surface) 82%,transparent);border-radius:6px;padding:1px 6px;border:1px solid var(--border)}
+.stage .lbl.inf{color:var(--muted);border-style:dashed}
+.stage .cap{position:absolute;left:10px;right:10px;bottom:10px;background:color-mix(in srgb,var(--surface) 92%,transparent);border:1px solid var(--border);
+  border-radius:10px;padding:8px 12px;font-size:13px;min-height:38px}
+.stage .hud{position:absolute;top:8px;left:10px;display:flex;gap:6px;flex-wrap:wrap}
+.stage .hud button{padding:4px 9px;font-size:12px}
+.side{display:flex;flex-direction:column;gap:10px;min-width:0}
+.flowlist{max-height:300px;overflow:auto}
+.flowrow{display:grid;grid-template-columns:12px 1fr;gap:8px;align-items:start;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13px}
+.flowrow:hover{background:var(--surface-2)} .flowrow.on{background:var(--surface-2);outline:1px solid var(--accent)}
+.dot{width:10px;height:10px;border-radius:50%;margin-top:5px;background:var(--c)}
+.st-ok{--c:var(--good)} .st-degraded{--c:var(--med)} .st-oneway{--c:var(--low)} .st-fail{--c:var(--crit)}
+.hopchain{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px}
+.hopchain .h{border:1px solid var(--border);border-radius:6px;padding:1px 6px;background:var(--surface-2);cursor:pointer}
+.hopchain .h.inf{border-style:dashed;color:var(--ink-2)} .hopchain .h.brk{border-color:var(--crit);color:var(--crit);font-weight:600}
+.hopchain .h.capt{box-shadow:inset 0 -2px 0 var(--accent)}
+.legend3{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
+.legend3 i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+.scen-grid{display:grid;grid-template-columns:260px minmax(0,1fr);gap:12px}
+.topic{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13.5px} .topic:hover{background:var(--surface-2)} .topic.on{background:var(--surface-2);font-weight:600}
+.steps{counter-reset:s;list-style:none;padding:0;margin:6px 0}
+.steps li{counter-increment:s;position:relative;padding:4px 0 6px 30px;font-size:13px}
+.steps li::before{content:counter(s);position:absolute;left:0;top:4px;width:20px;height:20px;border-radius:50%;background:var(--surface-2);border:1px solid var(--border);font-size:11px;display:grid;place-items:center}
+.fcard{border:1px solid var(--border);border-left:4px solid var(--crit);border-radius:10px;padding:10px 12px;margin:8px 0;background:var(--surface)}
+.fcard.seen{border-left-color:var(--high);box-shadow:0 0 0 1px var(--high) inset}
+.fcard h4{margin:0 0 4px;font-size:14px}
+.fcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:6px}
+.fcols div{background:var(--surface-2);border-radius:8px;padding:6px 9px;font-size:12.5px}
+.fcols b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--ink-2)}
+@media (max-width:900px){ .p3,.scen-grid{grid-template-columns:1fr} }
 @media (max-width:640px){ details.f summary{grid-template-columns:1fr} .hbar{grid-template-columns:90px 1fr 50px} main{padding:12px 16px} }
 @media print{ header{position:static} nav.tabs{display:none} section.tab{display:block!important;page-break-before:always} }
 </style>
@@ -137,6 +172,7 @@ svg text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
 </header>
 <main id="main"></main>
 <div id="tip"></div>
+<script src="__THREE_SRC__"></script>
 <script id="pl-data" type="application/json">__PACKETLENS_DATA__</script>
 <script>
 (function(){
@@ -164,7 +200,8 @@ $("#btn-json").onclick = () => { const b = new Blob([JSON.stringify(D,null,1)],{
 $("#hdr-src").textContent = `${D.meta.source} · ${D.stats.packets.toLocaleString()} packets · v${D.meta.version}`;
 
 /* ---------- tabs ---------- */
-const TABS = [["overview","Overview"],["rootcause","Root causes ("+D.root_causes.length+")"],["findings","Findings ("+D.findings.length+")"],
+const TABS = [["overview","Overview"],["path","Path 3D"],["scen","Scenarios ("+(D.scenarios||[]).length+")"],
+  ["rootcause","Root causes ("+D.root_causes.length+")"],["findings","Findings ("+D.findings.length+")"],
   ["tcp","TCP streams ("+D.streams.length+")"],["app","DNS · DHCP"],["web","Web · URLs · TLS"],["routing","Routing"],
   ["packets","Packets"],["conv","Conversations · Endpoints"]];
 const nav = $("#tabs"), main = $("#main");
@@ -471,6 +508,268 @@ R.conv = el => {
     {k:"bytes_ab",t:"Bytes A→B",num:1,f:fmtB},{k:"bytes_ba",t:"Bytes B→A",num:1,f:fmtB},{k:"apps",t:"Apps",f:v=>esc(v.join(", "))}], D.ip_conversations);
   table($("#arp-t",el), [{k:"ip",t:"IP",mono:1},{k:"macs",t:"MAC(s)",mono:1,f:v=>v.length>1?`<span class="sev critical">${esc(v.join(", "))}</span>`:esc(v.join(", "))}],
     Object.entries(D.arp||{}).map(([ip,macs])=>({ip,macs})), {search:false});
+};
+
+/* ---------- 3D path engine ---------- */
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#888";
+const ST_COLOR = {ok:"--good", warn:"--med", degraded:"--med", oneway:"--low", fail:"--crit"};
+const KIND_Y = {cloud:3.2, router:1.6, l3switch:1.2, switch:0, segment:-.4, ap:0, host:-1.8, server:-1.8};
+
+function layout(graph){
+  // deterministic 3D force layout: main flow along x, device kinds in horizontal bands
+  const N = graph.nodes, idx = new Map(N.map((n,i)=>[n.id,i])), P = N.map((n,i)=>[Math.cos(i*2.39)*7, KIND_Y[n.kind]||0, Math.sin(i*2.39)*7]);
+  const main = (graph.flows.find(f=>f.kind!=="control")||graph.flows[0]||{hops:[]}).hops;
+  main.forEach((h,i)=>{ const k=idx.get(h); if(k!=null) P[k]=[(i-(main.length-1)/2)*7, P[k][1], 0]; });
+  const E = graph.links.map(l=>[idx.get(l.a), idx.get(l.b)]).filter(e=>e[0]!=null&&e[1]!=null);
+  for(let it=0; it<350; it++){
+    const F = N.map(()=>[0,0,0]), cool = 1 - it/350;
+    for(let i=0;i<N.length;i++) for(let j=i+1;j<N.length;j++){
+      const d=[0,1,2].map(a=>P[i][a]-P[j][a]), r2=Math.max(.5, d[0]*d[0]+d[1]*d[1]+d[2]*d[2]), f=40/r2;
+      for(let a=0;a<3;a++){ F[i][a]+=d[a]*f/Math.sqrt(r2); F[j][a]-=d[a]*f/Math.sqrt(r2); } }
+    E.forEach(([i,j])=>{ const d=[0,1,2].map(a=>P[j][a]-P[i][a]), r=Math.hypot(...d)||1, f=(r-6.5)*.18;
+      for(let a=0;a<3;a++){ F[i][a]+=d[a]/r*f; F[j][a]-=d[a]/r*f; } });
+    N.forEach((n,i)=>{ F[i][1]+=((KIND_Y[n.kind]||0)-P[i][1])*.6; F[i][2]-=P[i][2]*.04;
+      for(let a=0;a<3;a++) P[i][a]+=Math.max(-1.5,Math.min(1.5,F[i][a]))*cool; });
+  }
+  return new Map(N.map((n,i)=>[n.id,P[i]]));
+}
+
+function make3D(el, graph, opts={}){
+  if(!window.THREE){ return null; }
+  const T = window.THREE, W = () => el.clientWidth, H = () => el.clientHeight;
+  const renderer = new T.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio||1)); renderer.setSize(W(), H());
+  el.appendChild(renderer.domElement);
+  const scene = new T.Scene(), camera = new T.PerspectiveCamera(45, W()/H(), .1, 2000);
+  scene.add(new T.HemisphereLight(0xffffff, 0x444444, 1.0)); const dl = new T.DirectionalLight(0xffffff,.6); dl.position.set(10,20,15); scene.add(dl);
+  const pos = layout(graph), meshes = new Map(), labels = new Map(), ink = new T.Color(css("--ink-2")), acc = new T.Color(css("--accent"));
+  const col = k => new T.Color(css(k));
+  const KC = {router:col("--accent"), l3switch:col("--accent"), switch:col("--good"), host:col("--ink-2"), server:col("--high"),
+              ap:col("--med"), cloud:col("--muted"), segment:col("--muted")};
+  const geo = {router:new T.CylinderGeometry(1,1,.7,28), l3switch:new T.BoxGeometry(2,.8,1.4), switch:new T.BoxGeometry(2.1,.5,1.3),
+               host:new T.BoxGeometry(1,.8,.9), server:new T.BoxGeometry(.9,1.8,1), ap:new T.ConeGeometry(.8,1.2,20),
+               cloud:new T.SphereGeometry(1.3,24,16), segment:new T.TorusGeometry(1,.12,10,40)};
+  graph.nodes.forEach(n=>{
+    const inferred = n.observed===false || n.kind==="cloud";
+    const m = new T.Mesh(geo[n.kind]||geo.host, new T.MeshStandardMaterial({color:KC[n.kind]||ink, roughness:.55, metalness:.1,
+                         transparent:inferred, opacity:inferred?.35:1, wireframe:n.observed===false && n.kind!=="cloud"}));
+    if(n.kind==="segment") m.rotation.x = Math.PI/2;
+    m.scale.setScalar(1.5);
+    m.position.set(...pos.get(n.id)); m.userData = n; scene.add(m); meshes.set(n.id, m);
+    const d = document.createElement("div"); d.className = "lbl"+(inferred?" inf":""); d.textContent = n.label; el.appendChild(d); labels.set(n.id, d);
+  });
+  const lineMat = new T.LineBasicMaterial({color:ink, transparent:true, opacity:.55});
+  const tunMat = new T.LineDashedMaterial({color:0xa05ae0, dashSize:.6, gapSize:.35});
+  const infMat = new T.LineDashedMaterial({color:ink, dashSize:.3, gapSize:.3, transparent:true, opacity:.5});
+  const capMat = new T.MeshBasicMaterial({color:acc});
+  graph.links.forEach(l=>{
+    const a = pos.get(l.a), b = pos.get(l.b); if(!a||!b) return;
+    const g = new T.BufferGeometry().setFromPoints([new T.Vector3(...a), new T.Vector3(...b)]);
+    const line = new T.Line(g, l.kind==="tunnel"?tunMat:(l.observed?lineMat:infMat)); line.computeLineDistances(); scene.add(line);
+    if(l.captures && l.captures.length){      // capture point = lens ring on the link
+      const r = new T.Mesh(new T.TorusGeometry(.45,.09,8,28), capMat); r.position.set((a[0]+b[0])/2,(a[1]+b[1])/2+.2,(a[2]+b[2])/2);
+      r.lookAt(new T.Vector3(...b)); r.userData = {capture:l.captures}; scene.add(r);
+      const d = document.createElement("div"); d.className="lbl"; d.style.color="var(--accent)"; d.textContent="◉ capture"+(l.captures.length>1?" ×"+l.captures.length:""); el.appendChild(d);
+      labels.set("cap:"+l.a+"|"+l.b, d); meshes.set("cap:"+l.a+"|"+l.b, r);
+    }
+  });
+  // fit camera
+  const box = new T.Box3(); meshes.forEach(m=>box.expandByObject(m)); const c = box.getCenter(new T.Vector3()), size = box.getSize(new T.Vector3());
+  // fit both extents: horizontal field of view depends on the stage's aspect ratio
+  const vh = Math.tan(camera.fov*Math.PI/360), hh = vh*camera.aspect, halfW = Math.max(size.x, size.z)/2 + 2, halfH = size.y/2 + 3;
+  let rad = Math.max(halfW/hh, halfH/vh, 12)*1.15 + Math.min(size.x, size.z)/2, th = .35, ph = 1.15; const target = c.clone();
+  const place = () => { camera.position.set(target.x+rad*Math.sin(ph)*Math.sin(th), target.y+rad*Math.cos(ph), target.z+rad*Math.sin(ph)*Math.cos(th)); camera.lookAt(target); };
+  place();
+  // orbit controls (drag = rotate, wheel/pinch = zoom, right-drag or shift = pan)
+  let drag=null, pinch=null;
+  const cv = renderer.domElement;
+  cv.addEventListener("pointerdown", e=>{ drag={x:e.clientX,y:e.clientY,pan:e.button===2||e.shiftKey,moved:0}; cv.setPointerCapture(e.pointerId); cv.style.cursor="grabbing"; });
+  cv.addEventListener("pointermove", e=>{ if(!drag) return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY; drag.moved+=Math.abs(dx)+Math.abs(dy);
+    if(drag.pan){ const s=rad/600, r=new T.Vector3().subVectors(camera.position,target).cross(camera.up).normalize(); target.addScaledVector(r, dx*s).addScaledVector(camera.up, dy*s); }
+    else { th-=dx*.006; ph=Math.max(.15,Math.min(Math.PI-.15, ph-dy*.006)); } place(); });
+  cv.addEventListener("pointerup", e=>{ cv.style.cursor="grab"; if(drag && drag.moved<5) pick(e); drag=null; });
+  cv.addEventListener("contextmenu", e=>e.preventDefault());
+  cv.addEventListener("wheel", e=>{ e.preventDefault(); rad=Math.max(5,Math.min(400, rad*(1+Math.sign(e.deltaY)*.1))); place(); }, {passive:false});
+  cv.addEventListener("touchmove", e=>{ if(e.touches.length===2){ const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    if(pinch) { rad=Math.max(5,Math.min(400, rad*pinch/d)); place(); } pinch=d; } }, {passive:true});
+  cv.addEventListener("touchend", ()=>pinch=null);
+  const ray = new T.Raycaster(), mv = new T.Vector2();
+  function pick(e){ const r = cv.getBoundingClientRect(); mv.set(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1);
+    ray.setFromCamera(mv, camera); const hit = ray.intersectObjects([...meshes.values()])[0]; if(hit && opts.onPick) opts.onPick(hit.object.userData); }
+  // packets
+  const live = []; const pgeo = new T.SphereGeometry(.32, 16, 12);
+  function launch({path, status="ok", dieAt=null, dur=1.6, label=""}){
+    path = path.filter(id=>pos.has(id));             // only nodes that exist in this graph
+    const pts = path.map(id=>{ const p=pos.get(id); return new T.Vector3(p[0],p[1]+.9,p[2]); }); if(pts.length<2) return;
+    const stopIdx = dieAt!=null ? path.indexOf(dieAt) : -1;
+    const m = new T.Mesh(pgeo, new T.MeshBasicMaterial({color:col(ST_COLOR[status]||"--good")})); scene.add(m);
+    live.push({m, pts, t0:performance.now(), dur:dur*1000*(Math.max(1,pts.length-1)/2), stop: stopIdx>0?stopIdx:pts.length-1, label, burst:stopIdx>0});
+  }
+  function burst(p){ const m = new T.Mesh(new T.SphereGeometry(.4,16,12), new T.MeshBasicMaterial({color:col("--crit"),transparent:true,opacity:.9}));
+    m.position.copy(p); scene.add(m); live.push({m, burstAnim:true, t0:performance.now()}); }
+  let hl = null;
+  function highlight(ids){ meshes.forEach((m,id)=>{ if(m.material.emissive){ m.material.emissive.setHex(0x000000); } });
+    (ids||[]).forEach(id=>{ const m=meshes.get(id); if(m&&m.material.emissive) m.material.emissive.copy(acc).multiplyScalar(.45); }); hl=ids; }
+  const v = new T.Vector3(); let raf, alive = true;
+  function frame(now){
+    if(!alive) return;
+    raf = requestAnimationFrame(frame);              // schedule first: one bad packet must not stop the scene
+    for(let i=live.length-1;i>=0;i--){ const p = live[i];
+      if(p.burstAnim){ const k=(now-p.t0)/700; p.m.scale.setScalar(1+k*4); p.m.material.opacity=Math.max(0,.9-k); if(k>=1){ scene.remove(p.m); live.splice(i,1);} continue; }
+      // rAF's timestamp can precede the performance.now() taken at launch: clamp so progress is never negative
+      const k = Math.max(0, Math.min(1,(now-p.t0)/p.dur)), seg = k*(p.pts.length-1);
+      if(seg >= p.stop){ p.m.position.copy(p.pts[p.stop]); if(p.burst) burst(p.pts[p.stop]); scene.remove(p.m); live.splice(i,1); continue; }
+      const s = Math.floor(seg); p.m.position.lerpVectors(p.pts[s], p.pts[Math.min(s+1,p.pts.length-1)], seg-s); }
+    renderer.render(scene, camera);
+    const w=W(), h=H();
+    const placed = [];
+    labels.forEach((d,id)=>{ const m = meshes.get(id); if(!m) return; v.copy(m.position); v.y+=1.1; v.project(camera);
+      if(v.z>1){ d.style.display="none"; return; } d.style.display="";
+      let x = (v.x+1)/2*w, y = (1-v.y)/2*h; const lw = d.offsetWidth, lh = d.offsetHeight + 2;
+      for(const q of placed) if(Math.abs(q[0]-x) < (q[2]+lw)/2 && Math.abs(q[1]-y) < lh) y = q[1] - lh;   // stack colliding labels
+      placed.push([x, y, lw]); d.style.left = x+"px"; d.style.top = y+"px"; });
+  }
+  raf = requestAnimationFrame(frame);
+  const ro = new ResizeObserver(()=>{ renderer.setSize(W(),H()); camera.aspect=W()/H(); camera.updateProjectionMatrix(); }); ro.observe(el);
+  return {launch, highlight, clear(){ live.forEach(p=>scene.remove(p.m)); live.length=0; },
+          dispose(){ alive=false; cancelAnimationFrame(raf); ro.disconnect(); renderer.dispose(); cv.remove(); labels.forEach(d=>d.remove()); }};
+}
+
+// replay a flow's captured packets: capture-time order, compressed to ~12 s; failed packets die at the break point
+function flowSequence(f){
+  const st = f.steps||[], span = Math.max(1e-6, st.length ? st[st.length-1].t : 1), out = [];
+  st.forEach(s=>{ let path = s.dir==="fwd" ? f.hops : [...f.hops].reverse(), dieAt = null;
+    if(f.break_at && s.status==="fail" && s.dir==="fwd") dieAt = f.break_at;
+    if(f.break_at && s.status==="fail" && s.dir==="rev"){ const i = path.indexOf(f.break_at); if(i>0) path = path.slice(i); }
+    if(f.status==="fail" && f.break_at && s.dir==="fwd" && !st.some(x=>x.dir==="rev")) dieAt = f.break_at;
+    out.push({at: Math.min(12, s.t/span*12), path, status:s.status, dieAt, label:s.label, no:s.no}); });
+  return out;
+}
+
+function run(engine, seq, caption, onStep){
+  const timers = []; engine.clear();
+  seq.forEach((s,i)=>timers.push(setTimeout(()=>{ engine.launch(s); if(caption) caption.innerHTML = s.caption || `<b>${s.no?"#"+s.no+" ":""}</b>${esc(s.label)}`; if(onStep) onStep(i); }, s.at*1000)));
+  return () => timers.forEach(clearTimeout);
+}
+
+// 2D fallback when three.min.js is not available
+function flat(el, graph, f){
+  const lab = new Map(graph.nodes.map(n=>[n.id,n]));
+  el.innerHTML = `<div style="padding:16px"><p class="muted small">3D view unavailable (three.min.js not found next to this report) — showing the hop chain.</p>
+    <div class="hopchain">${(f?f.hops:[]).map((h,i)=>`${i?"→":""}<span class="h ${lab.get(h)&&lab.get(h).observed===false?"inf":""} ${f.break_at===h?"brk":""}">${esc(lab.get(h)?lab.get(h).label:h)}</span>`).join(" ")}</div></div>`;
+}
+
+function hopChain(graph, f){
+  const lab = new Map(graph.nodes.map(n=>[n.id,n])), cb = new Set((f.capture_points||[f.capture_between]).flat());
+  return `<div class="hopchain">${f.hops.map((h,i)=>{ const n = lab.get(h)||{label:h};
+    return `${i?"<span class='muted'>→</span>":""}<span class="h ${n.observed===false?"inf":""} ${f.break_at===h?"brk":""} ${cb.has(h)?"capt":""}" data-node="${esc(h)}" title="${esc((n.evidence||[]).join("; "))}">${esc(n.label)}</span>`; }).join(" ")}</div>`;
+}
+
+function nodeCard(n){
+  if(!n || n.capture) return `<div class="muted small">Capture point: ${esc((n&&n.capture||[]).join(", "))}</div>`;
+  return `<div class="kv"><b>Device</b><span>${esc(n.label)} <span class="chip">${esc(n.kind)}</span>${n.observed===false?'<span class="chip">inferred</span>':""}</span>
+    ${n.ips&&n.ips.length?`<b>IP</b><span class="mono">${esc(n.ips.slice(0,5).join(", "))}</span>`:""}
+    ${n.macs&&n.macs.length?`<b>MAC</b><span class="mono">${esc(n.macs.slice(0,3).join(", "))}</span>`:""}
+    ${n.roles&&n.roles.length?`<b>Roles</b><span>${esc(n.roles.join(", "))}</span>`:""}
+    ${n.captures?`<b>Seen in</b><span>${esc(n.captures.join(", "))}</span>`:""}
+    <b>Evidence</b><span>${esc((n.evidence||[]).join("; ")||"—")}</span></div>`;
+}
+
+R.path = el => {
+  const views = [["capture", D.path]].concat(D.path_folder ? [["folder", D.path_folder]] : []).filter(v=>v[1]);
+  if(!views.length){ el.innerHTML='<div class="card empty">No path information (no IP or discovery traffic).</div>'; return; }
+  el.innerHTML = `${views.length>1?`<div class="filters"><span class="muted small">View:</span><button data-v="0">This capture</button><button data-v="1">Whole folder (${esc(D.path_folder.capture.split(" + ").length)} captures stitched)</button></div>`:""}
+    <div class="p3"><div><div class="stage" id="stage"><div class="hud"><button id="p-play">▶ Replay flow</button><button id="p-all">Replay all</button><button id="p-reset">Reset view</button></div><div class="cap" id="p-cap">Select a flow, then replay it. Drag to rotate, wheel/pinch to zoom, right-drag to pan, click a device for its evidence.</div></div>
+      <div class="legend3" style="margin-top:8px"><span><i style="background:var(--good)"></i>ok</span><span><i style="background:var(--med)"></i>retransmission / warning</span><span><i style="background:var(--low)"></i>one-way here</span><span><i style="background:var(--crit)"></i>failed / dropped</span>
+        <span>◉ capture point</span><span>solid = observed · wireframe/dashed = inferred</span><span style="color:#a05ae0">- - tunnel</span></div>
+      <div class="card" style="margin-top:10px" id="p-notes"></div></div>
+    <div class="side"><div class="card"><h3 style="margin-top:0">Flows</h3><div class="flowlist" id="p-flows"></div></div>
+      <div class="card" id="p-flow"></div><div class="card" id="p-node"><span class="muted small">Click a device in the 3D view or in the hop chain.</span></div></div></div>`;
+  let eng = null, stop = null, graph = null, cur = null;
+  const stage = $("#stage", el), cap = $("#p-cap", el);
+  function load(i){
+    graph = views[i][1]; if(stop) stop(); if(eng) eng.dispose();
+    stage.querySelectorAll("canvas,.lbl").forEach(x=>x.remove());
+    eng = make3D(stage, graph, {onPick: n => { $("#p-node",el).innerHTML = nodeCard(n); if(n && n.id) eng.highlight([n.id]); }});
+    $("#p-notes",el).innerHTML = `<h3 style="margin-top:0">How this path was inferred</h3><ul class="tight">${graph.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`;
+    $("#p-flows",el).innerHTML = graph.flows.map((f,k)=>`<div class="flowrow" data-f="${k}"><span class="dot st-${esc(f.status)}"></span><div><div>${esc(f.label)}</div>
+      <div class="muted small">${esc(f.status)} · ${f.packets} pkt${f.captures&&f.captures.length>1?` · seen at ${f.captures.length} capture points`:""}</div></div></div>`).join("") || '<div class="muted small">No flows.</div>';
+    $("#p-flows",el).querySelectorAll(".flowrow").forEach(r=>r.onclick=()=>select(+r.dataset.f, true));
+    el.querySelectorAll("[data-v]").forEach(b=>b.classList.toggle("on", +b.dataset.v===i));
+    select(0, false);
+  }
+  function select(k, play){
+    cur = graph.flows[k]; if(!cur) return;
+    $("#p-flows",el).querySelectorAll(".flowrow").forEach(r=>r.classList.toggle("on", +r.dataset.f===k));
+    $("#p-flow",el).innerHTML = `<h3 style="margin-top:0"><span class="dot st-${esc(cur.status)}" style="display:inline-block;margin-right:6px"></span>${esc(cur.label)}</h3>
+      ${hopChain(graph, cur)}<p style="margin:8px 0 0">${esc(cur.why)}</p>
+      ${cur.break_at?`<p class="small" style="color:var(--crit);margin:6px 0 0">Breaks at: ${esc((graph.nodes.find(n=>n.id===cur.break_at)||{label:cur.break_at}).label)}</p>`:""}
+      ${cur.branches&&cur.branches.length?`<p class="small muted">Parallel (ECMP) branch: ${cur.branches.map(b=>esc(b.map(x=>(graph.nodes.find(n=>n.id===x)||{label:x}).label).join(" → "))).join("; ")}</p>`:""}`;
+    $("#p-flow",el).querySelectorAll("[data-node]").forEach(h=>h.onclick=()=>{ const n = graph.nodes.find(x=>x.id===h.dataset.node); $("#p-node",el).innerHTML = nodeCard(n); if(eng) eng.highlight([h.dataset.node]); });
+    if(!eng){ flat(stage, graph, cur); return; }
+    eng.highlight(cur.hops);
+    if(play){ if(stop) stop(); stop = run(eng, flowSequence(cur), cap); }
+  }
+  el.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>load(+b.dataset.v));
+  $("#p-play",el).onclick = ()=>{ if(cur && eng){ if(stop) stop(); stop = run(eng, flowSequence(cur), cap); } };
+  $("#p-all",el).onclick = ()=>{ if(!eng) return; if(stop) stop(); const seq = graph.flows.flatMap((f,k)=>flowSequence(f).slice(0,6).map(s=>({...s, at:k*1.2+s.at/6})));
+    stop = run(eng, seq, cap); };
+  $("#p-reset",el).onclick = ()=>load(views.findIndex(v=>v[1]===graph));
+  load(0);
+};
+
+/* ---------- scenarios ---------- */
+R.scen = el => {
+  const S = D.scenarios||[];
+  if(!S.length){ el.innerHTML='<div class="card empty">No scenario topics match this capture.</div>'; return; }
+  const found = new Map(D.findings.map(f=>[f.id,f]));
+  el.innerHTML = `<p class="muted">For each protocol in this capture: how its packets <b>normally</b> travel, what goes <b>wrong</b>, why, how to fix it now and how to prevent it.
+    Cards outlined in orange were <b>detected in this capture</b>. Animations use generic devices by role; the <b>Path 3D</b> tab shows this capture's real devices.</p>
+    <div class="scen-grid"><div class="card" id="s-topics">${S.map((t,i)=>`<div class="topic" data-t="${i}">${esc(t.title)}${t.failures.some(f=>f.findings.some(x=>found.has(x)))?' <span class="sev high"></span>':""}</div>`).join("")}</div>
+    <div><div class="stage" id="s-stage" style="height:min(46vh,420px)"><div class="hud"><button id="s-normal">▶ Normal flow</button></div><div class="cap" id="s-cap">Pick a scenario to animate.</div></div>
+      <div class="card" style="margin-top:10px" id="s-body"></div></div></div>`;
+  let eng = null, stop = null;
+  function roleGraph(t){
+    // generic devices by role: the capture's real devices are in the Path 3D tab (guessing a role→device mapping mislabels them)
+    const names = t.roles.slice();
+    const kinds = t.roles.map(r=>/switch|bridge|authenticator/i.test(r)?"switch":/router|gateway|leaf|spine|rp|dr|vtep|relay|tunnel|isp|underlay|firewall|proxy|querier/i.test(r)?"router":/server|resolver|radius|dhcp/i.test(r)?"server":"host");
+    return {nodes:names.map((n,i)=>({id:"r"+i, label:n, kind:kinds[i], observed:true})), links:names.slice(1).map((_,i)=>({a:"r"+i, b:"r"+(i+1), kind:"l2", observed:true})),
+            flows:[{kind:"data", hops:names.map((_,i)=>"r"+i)}], notes:[]};
+  }
+  const between = (a,b) => { const out=[]; const s=a<=b?1:-1; for(let i=a;i!==b+s;i+=s) out.push("r"+i); return out; };
+  function seqFor(t, f){
+    const steps = f ? t.normal.slice(0, f.at+1) : t.normal, seq = [];
+    steps.forEach((s,i)=>{ const last = f && i===f.at;
+      const path = s.from===s.to ? ["r"+s.from, "r"+Math.min(s.from+1,t.roles.length-1), "r"+s.from] : between(s.from, s.to);
+      seq.push({at:i*1.7, path, status: last && f.drop!=null ? "fail" : "ok", dieAt: last && f.drop!=null ? "r"+f.drop : null, label:s.label,
+                caption:`<b>${i+1}. ${esc(s.label)}</b> — ${esc(s.note)}`}); });
+    if(f && f.reply) seq.push({at:steps.length*1.7, path:between(f.reply[0], f.reply[1]), status:"fail", label:f.reply[2],
+                               caption:`<b style="color:var(--crit)">✕ ${esc(f.reply[2])}</b> — ${esc(f.symptom)}`});
+    if(f && f.drop!=null) seq.push({at:steps.length*1.7+.2, path:["r"+f.drop], status:"fail", label:"", caption:`<b style="color:var(--crit)">✕ ${esc(f.title)}</b> — ${esc(f.symptom)}`});
+    return seq;
+  }
+  function open(i){
+    const t = S[i];
+    el.querySelectorAll(".topic").forEach(x=>x.classList.toggle("on", +x.dataset.t===i));
+    if(stop) stop(); if(eng) eng.dispose();
+    const stg = $("#s-stage",el); stg.querySelectorAll("canvas,.lbl").forEach(x=>x.remove());
+    const g = roleGraph(t); eng = make3D(stg, g);
+    if(!eng) flat(stg, g, g.flows[0]);
+    const play = f => { if(!eng) return; if(stop) stop(); stop = run(eng, seqFor(t, f), $("#s-cap",el)); };
+    $("#s-normal",el).onclick = () => play(null);
+    $("#s-body",el).innerHTML = `<h2 style="margin-top:0">${esc(t.title)}</h2><p>${esc(t.summary)}</p>
+      <h3>Normal packet travel</h3><ol class="steps">${t.normal.map(s=>`<li><b>${esc(t.roles[s.from])} → ${esc(t.roles[s.to])}: ${esc(s.label)}</b><br><span class="muted">${esc(s.note)}</span></li>`).join("")}</ol>
+      <h3>When it goes wrong</h3>${t.failures.map((f,k)=>{ const hit = f.findings.filter(x=>found.has(x));
+        return `<div class="fcard ${hit.length?"seen":""}"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h4>${esc(f.title)}</h4>
+          ${hit.length?hit.map(x=>`<a href="#" class="chip" onclick="plGoFinding('${esc(found.get(x).uid)}');return false">detected: ${esc(found.get(x).title)}</a>`).join(""):""}
+          <span class="spacer"></span><button data-f="${k}">▶ Animate</button></div>
+          <div class="small"><b>On the wire:</b> ${esc(f.symptom)}</div>
+          <div class="fcols"><div><b>Why it happens</b>${f.why.map(esc).join("<br>")}</div><div><b>Fix now</b>${f.fix.map(esc).join("<br>")}</div><div><b>Prevent / mitigate</b>${f.prevent.map(esc).join("<br>")}</div></div></div>`; }).join("")}`;
+    $("#s-body",el).querySelectorAll("button[data-f]").forEach(b=>b.onclick=()=>{ play(t.failures[+b.dataset.f]); $("#s-stage",el).scrollIntoView({block:"nearest"}); });
+    play(null);
+  }
+  el.querySelectorAll(".topic").forEach(x=>x.onclick=()=>open(+x.dataset.t));
+  open(0);
 };
 
 const start = store("pl-tab"); show(TABS.some(t=>t[0]===start)?start:"overview");

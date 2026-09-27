@@ -8,5 +8,7 @@ dist/
 packetlens-demo.*
 *.packetlens.json
 reports/
+packetlens-reports/
+pcap_list/
 samples/*.pcap
 samples/*.pcapng

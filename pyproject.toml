@@ -10,11 +10,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []
-
-[project.optional-dependencies]
-# TLS decryption (AES-GCM / ChaCha20-Poly1305) and HTTP/2 header (HPACK) decoding
-full = ["cryptography>=3.4", "hpack>=4"]
-dev = ["cryptography>=3.4", "hpack>=4", "h2>=4"]
 keywords = ["pcap", "pcapng", "wireshark", "network", "tcp", "tls", "http2", "dns", "dhcp", "bgp", "ospf", "eigrp", "rip", "isis", "hsrp", "vrrp", "troubleshooting"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -23,6 +18,11 @@ classifiers = [
   "Environment :: Web Environment",
 ]
 
+[project.optional-dependencies]
+# TLS decryption (AES-GCM / ChaCha20-Poly1305) and HTTP/2 header (HPACK) decoding
+full = ["cryptography>=3.4", "hpack>=4"]
+dev = ["cryptography>=3.4", "hpack>=4", "h2>=4"]
+
 [project.scripts]
 packetlens = "packetlens.cli:main"
 
@@ -30,4 +30,4 @@ packetlens = "packetlens.cli:main"
 include = ["packetlens*"]
 
 [tool.setuptools.package-data]
-"packetlens.report" = ["template.html"]
+"packetlens.report" = ["template.html", "vendor/three.min.js", "vendor/LICENSE-three.txt"]

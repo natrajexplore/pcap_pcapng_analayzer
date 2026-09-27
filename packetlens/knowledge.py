@@ -952,6 +952,283 @@ KB: dict[str, dict] = {
         {"client": "Attacker source.", "server": "Target may be vulnerable if it logs the header.", "network": "N/A", "application": "Patch Log4j.",
          "security": "Chris Greer's 'log4j' filter (ip contains jndi)."},
         ["Check for outbound LDAP/RMI from the target after the request", "Patch Log4j ≥2.17"], ["WAF rules"], "frame contains \"jndi\""),
+
+    # ========================================================= Switching ===
+    "l2_neighbors": K(
+        "Directly connected neighbors (CDP/LLDP)", "Network", "CDP", "info",
+        ["Normal operation: switches, routers, phones and APs announce identity, port, platform and VLAN every 60 s (CDP) / 30 s (LLDP)"],
+        {"network": "Tells you exactly which device and port sit at the other end of this cable — the first hop of every path.",
+         "security": "Discovery frames leak platform, software version and addressing to anyone on the port."},
+        ["Compare the announced port / native VLAN / duplex with the intended design"],
+        ["Disable CDP/LLDP on user-facing and Internet-facing ports ('no cdp enable', 'no lldp transmit')"], "cdp || lldp"),
+    "cdp_native_vlan_mismatch": K(
+        "Native VLAN mismatch on a trunk", "Network", "CDP", "high",
+        ["The two ends of an 802.1Q trunk use different 'switchport trunk native vlan' values",
+         "One side was changed (hardening away from VLAN 1) without the other"],
+        {"network": "Untagged frames leave one switch in VLAN A and arrive on the neighbor in VLAN B: the two VLANs are silently "
+                    "bridged, STP (PVST+) blocks the port for inconsistency, or hosts lose connectivity.",
+         "security": "Traffic leaks between VLANs that are supposed to be isolated.",
+         "client": "Hosts in the native VLAN reach the wrong subnet or nothing at all."},
+        ["Set the same native VLAN on both ends: 'switchport trunk native vlan <id>'",
+         "Verify with 'show interfaces trunk' and look for %CDP-4-NATIVE_VLAN_MISMATCH / PVST inconsistency logs"],
+        ["Use a dedicated unused native VLAN on every trunk, or 'vlan dot1q tag native'", "Template trunk configuration"],
+        "cdp.native_vlan"),
+    "cdp_duplex_mismatch": K(
+        "Duplex mismatch between neighbors", "Network", "CDP", "high",
+        ["One side hard-coded to full duplex while the other auto-negotiates (and falls back to half)"],
+        {"network": "The half-duplex side detects collisions/late collisions and drops frames; the full-duplex side logs CRC/runts. "
+                    "Throughput collapses under load while light traffic (ping) looks fine.",
+         "client": "Slow file transfers and TCP retransmissions that appear only under load."},
+        ["Set both ends to auto/auto (preferred) or both to the same speed and full duplex",
+         "Check 'show interfaces' for late collisions and CRC errors"], ["Never hard-code only one side of a link"], "cdp.duplex"),
+    "dtp_negotiation_enabled": K(
+        "DTP trunk negotiation enabled on switch ports", "Security", "DTP", "medium",
+        ["Default Cisco port mode 'dynamic auto' / 'dynamic desirable', or 'trunk' without 'nonegotiate'"],
+        {"network": "Ports decide by themselves whether to become trunks; misconfigured neighbors can end up with the wrong port type.",
+         "security": "An attacker can send DTP 'desirable' frames and turn an access port into a trunk, gaining every VLAN "
+                     "(switch-spoofing VLAN hopping)."},
+        ["Access ports: 'switchport mode access' + 'switchport nonegotiate'",
+         "Trunks: 'switchport mode trunk' + 'switchport nonegotiate' + an explicit allowed-VLAN list"],
+        ["Disable DTP globally in the port templates; shut unused ports and put them in a parking VLAN"], "dtp"),
+    "dtp_trunk_not_formed": K(
+        "Trunk did not form: both sides dynamic auto", "Network", "DTP", "medium",
+        ["Both switch ports are 'dynamic auto' — each waits for the other to initiate, so the link stays an access port"],
+        {"network": "Only the access VLAN crosses the link; every other VLAN is cut off between the two switches.",
+         "client": "Hosts in other VLANs cannot reach their gateway across this link."},
+        ["Configure 'switchport mode trunk' (with 'nonegotiate') on both ends"], ["Use static trunking everywhere"], "dtp"),
+    "isl_trunk": K(
+        "Cisco ISL trunk encapsulation in use", "Network", "ISL", "low",
+        ["Legacy trunk configuration ('switchport trunk encapsulation isl')"],
+        {"network": "ISL wraps the whole frame in a 26-byte header + 4-byte CRC (30 bytes overhead); it is Cisco-proprietary, "
+                    "unsupported on modern platforms and cannot interoperate with other vendors."},
+        ["Migrate the trunk to 802.1Q ('switchport trunk encapsulation dot1q') on both ends in one maintenance window"],
+        ["Standardize on 802.1Q trunking"], "isl"),
+    "vlan_trunk_summary": K(
+        "802.1Q trunk: VLANs carried", "Network", "802.1Q", "info",
+        ["Normal operation: frames of several VLANs share one link, each tagged with a 4-byte 802.1Q header; the native VLAN is sent untagged"],
+        {"network": "The capture link is a trunk; each tagged VLAN is a separate broadcast domain / subnet."},
+        ["Compare carried VLANs with 'switchport trunk allowed vlan'"], ["Prune unused VLANs from trunks"], "vlan"),
+    "vlan_native_vlan1": K(
+        "Untagged native VLAN on a trunk (VLAN hopping exposure)", "Security", "802.1Q", "low",
+        ["Native VLAN left at the default VLAN 1, or user traffic placed in the native VLAN"],
+        {"security": "Double-tagging attack: a host in the native VLAN sends a frame with two tags; the first switch strips the "
+                     "native tag and forwards the frame tagged with the victim VLAN.",
+         "network": "Control traffic (CDP/DTP/STP/VTP) also rides VLAN 1 by default."},
+        ["Move the native VLAN to an unused VLAN on both ends", "Or tag it: 'vlan dot1q tag native'"],
+        ["Never put user ports in the native VLAN"], "!vlan"),
+    "stp_summary": K(
+        "Spanning tree: root bridge per VLAN", "Network", "STP", "info",
+        ["Normal operation: the bridge with the lowest priority+MAC becomes root; every other switch blocks redundant ports to prevent loops"],
+        {"network": "Traffic of each VLAN flows along the tree toward/away from its root — the root should be the core/distribution switch."},
+        ["Verify the root is the intended switch ('show spanning-tree root')"],
+        ["Pin the root with 'spanning-tree vlan X root primary'; enable Root Guard toward access switches, BPDU Guard + PortFast on edge ports"],
+        "stp"),
+
+    # ========================================================= Multicast ===
+    "pim_neighbors": K(
+        "PIM neighbors and designated router", "Routing", "PIM", "info",
+        ["Normal operation: PIM routers send Hellos every 30 s (holdtime 105 s) to 224.0.0.13; the highest DR priority (then highest IP) becomes DR"],
+        {"routing": "The DR on the source segment registers new sources with the RP; the DR on the receiver segment sends (*,G) joins toward the RP."},
+        ["Check 'show ip pim neighbor' matches the neighbors seen here"],
+        ["Set DR priority explicitly on segments with several routers"], "pim.type == 0"),
+    "pim_timer_mismatch": K(
+        "PIM hello timers differ between neighbors", "Routing", "PIM", "low",
+        ["'ip pim query-interval' configured on one router only"],
+        {"routing": "Neighbors expire at different times; a slow-hello router can be declared dead during minor loss."},
+        ["Use the same query-interval on all PIM routers of the segment"], ["Template PIM interface settings"], "pim.type == 0"),
+    "pim_rp_info": K(
+        "PIM rendezvous point discovery", "Routing", "PIM", "info",
+        ["Normal operation: candidate RPs advertise to the bootstrap router (BSR); the BSR floods the RP set hop by hop in Bootstrap messages"],
+        {"routing": "Every router hashes the group into the RP set to find the RP; shared-tree joins and source registers go to that RP."},
+        ["Confirm all routers agree on the RP ('show ip pim rp mapping')"],
+        ["Use at least two candidate RPs/BSRs (or Anycast-RP with MSDP) for redundancy"], "pim.type == 4 || pim.type == 8"),
+    "pim_register_flow": K(
+        "PIM source registration completed", "Routing", "PIM", "info",
+        ["Normal operation: the first-hop DR unicasts the source's multicast data inside PIM Register messages to the RP; "
+         "once the RP has joined the source tree it sends Register-Stop"],
+        {"routing": "After Register-Stop, data flows natively down the (S,G) tree and the DR only sends periodic null-registers."},
+        ["None — expected behaviour"], ["Monitor register rate on the RP"], "pim.type == 1 || pim.type == 2"),
+    "pim_register_no_stop": K(
+        "PIM Registers without Register-Stop", "Routing", "PIM", "medium",
+        ["The RP has no receivers for the group and cannot reach the DR with Register-Stop",
+         "RPF check failure / unicast route missing between RP and source", "ACL or uRPF dropping Register-Stop",
+         "Different RP configured on DR and RP (the 'RP' is not really an RP for this group)"],
+        {"routing": "Every packet is unicast-encapsulated to the RP, punted to its CPU and decapsulated — high CPU, poor scale.",
+         "application": "Multicast receivers may get nothing or get traffic with extra latency."},
+        ["Check 'show ip mroute' on the RP for the (S,G)", "Verify unicast reachability RP ↔ DR and RPF toward the source",
+         "Confirm both routers use the same RP for this group"], ["Use consistent RP configuration (BSR/Auto-RP/static)"], "pim.type == 1"),
+    "pim_join_prune": K(
+        "PIM joins and prunes", "Routing", "PIM", "info",
+        ["Normal operation: downstream routers join trees for groups with receivers and prune branches that no longer have any"],
+        {"routing": "Prunes after an IGMP leave or an SPT switchover are expected; constant join/prune churn indicates flapping receivers or RPF changes."},
+        ["Correlate prunes with IGMP leaves"], ["None"], "pim.type == 3"),
+    "igmp_summary": K(
+        "IGMP group membership", "Routing", "IGMP", "info",
+        ["Normal operation: the querier (lowest IP router) sends general queries every 125 s; hosts report groups they want; routers forward only those groups"],
+        {"routing": "The querier's view of joined groups decides which multicast streams are forwarded onto this segment.",
+         "network": "IGMP snooping switches use the same reports to forward multicast only to member ports."},
+        ["Compare with 'show ip igmp groups'"], ["Match IGMP versions on hosts and routers"], "igmp"),
+    "igmp_no_querier": K(
+        "No IGMP querier on the segment", "Routing", "IGMP", "medium",
+        ["Multicast routing (PIM) not enabled on the gateway interface", "Layer-2-only VLAN with IGMP snooping but no snooping querier"],
+        {"network": "Snooping switches age out memberships (~260 s) and stop forwarding the group — streams drop every few minutes.",
+         "application": "Video/market-data receivers see periodic outages."},
+        ["Enable PIM on the VLAN interface, or configure 'ip igmp snooping querier' on the switch"], ["Monitor querier presence"], "igmp"),
+    "igmp_multiple_queriers": K(
+        "Multiple IGMP queriers", "Routing", "IGMP", "low",
+        ["Routers do not hear each other's queries (ACL, different VLAN mapping, version mismatch)"],
+        {"routing": "Query election is broken; hosts get duplicated queries and routers disagree on membership."},
+        ["Verify both routers see each other's queries; align IGMP versions"], ["Keep one querier per segment"], "igmp.type == 0x11"),
+    "igmp_version_mix": K(
+        "Mixed IGMP versions", "Routing", "IGMP", "low",
+        ["Hosts and routers configured for different IGMP versions"],
+        {"routing": "The router falls back to the oldest version heard; SSM (IGMPv3 source filtering) stops working."},
+        ["Set 'ip igmp version 3' (or the intended version) on the router and update hosts"], ["Standardize IGMP version"], "igmp"),
+
+    # =========================================================== Tunnels ===
+    "gre_tunnel": K(
+        "GRE tunnel", "Network", "GRE", "info",
+        ["Normal operation: packets are wrapped in a new IPv4 header + 4-byte GRE header between the two tunnel endpoints"],
+        {"network": "Inner hosts see one hop; the underlay sees only the endpoints. Every packet is 24 bytes bigger, so the tunnel MTU is 1476.",
+         "routing": "Routing protocols (OSPF/EIGRP) often run inside the tunnel — watch for recursive routing if the tunnel destination is learned through the tunnel."},
+        ["'ip mtu 1400' and 'ip tcp adjust-mss 1360' on the tunnel interface"],
+        ["Encrypt with IPsec if the underlay is untrusted (GRE has no confidentiality)"], "gre"),
+    "vxlan_tunnel": K(
+        "VXLAN overlay", "Network", "VXLAN", "info",
+        ["Normal operation: VTEPs wrap the host's Ethernet frame in UDP/4789 with a 24-bit VNI; unknown/broadcast frames go to an underlay multicast group (flood-and-learn) or ingress replication"],
+        {"network": "Each packet grows by 50 bytes — the underlay MTU must be ≥1550 (9216 recommended).",
+         "routing": "Underlay needs working unicast routing between VTEP loopbacks and, for flood-and-learn, PIM for the BUM group."},
+        ["Verify underlay MTU end-to-end ('ping <vtep> size 1572 df-bit')"],
+        ["Prefer BGP EVPN control plane over flood-and-learn to limit flooding"], "vxlan"),
+    "tunnel_oversize": K(
+        "Encapsulated packets exceed the underlay MTU", "Network", "Tunnel", "high",
+        ["Inner MTU not reduced by the tunnel overhead", "Underlay links left at 1500 bytes for VXLAN"],
+        {"network": "Oversize packets are fragmented by the encapsulating router (CPU, reassembly at the far endpoint) or dropped when DF is set.",
+         "application": "Small requests work, large transfers stall (classic MTU black hole)."},
+        ["Lower the tunnel IP MTU and clamp TCP MSS", "Raise the underlay MTU (jumbo frames) for VXLAN"],
+        ["Document the MTU budget of every overlay"], "gre || vxlan"),
+    "tunnel_mss_too_large": K(
+        "TCP MSS too large for the tunnel", "Transport", "TCP", "medium",
+        ["No 'ip tcp adjust-mss' on the tunnel interface, so endpoints negotiate MSS 1460 over a 1476/1450-byte path"],
+        {"network": "Full-size segments exceed the tunnel MTU → fragmentation or drops (DF set).",
+         "client": "Sessions connect but bulk transfers hang or crawl."},
+        ["Configure 'ip tcp adjust-mss <tunnel MTU − 40>' on the tunnel interface"], ["Clamp MSS on every tunnel/VPN edge"], "tcp.options.mss_val > 1436"),
+    "tcp_mss_clamped": K(
+        "TCP MSS clamping observed", "Transport", "TCP", "info",
+        ["A router rewrote the MSS option of SYN packets in flight ('ip tcp adjust-mss')"],
+        {"network": "Endpoints will send segments that fit the smaller path MTU — this prevents fragmentation on tunnels/PPPoE/VPN."},
+        ["None — expected where a smaller-MTU hop exists"], ["Keep MSS clamp = path MTU − 40"], "tcp.flags.syn == 1"),
+
+    # ==================================================== Access control ===
+    "dot1x_sessions": K(
+        "802.1X authentication sessions", "Security", "EAPOL", "info",
+        ["Normal flow: EAPOL-Start (optional) → EAP-Request/Identity → Response/Identity → method exchange (TLS/PEAP/MD5) relayed to RADIUS → EAP-Success → port authorized"],
+        {"security": "Until EAP-Success the switch/AP port only passes EAPOL; afterwards the client gets its (possibly RADIUS-assigned) VLAN/ACL.",
+         "client": "Authentication time adds directly to how long a device waits for network access."},
+        ["Compare the identity and method with the ISE/RADIUS policy"], ["Monitor authentication latency"], "eapol || radius"),
+    "dot1x_failure": K(
+        "802.1X authentication failed", "Security", "EAPOL", "high",
+        ["Wrong credentials / expired password", "Client certificate not trusted, expired or revoked (EAP-TLS)",
+         "Supplicant does not trust the server certificate", "Policy rejects the user/device (wrong group, posture)"],
+        {"client": "Device stays unauthorized (or lands in guest/auth-fail VLAN).",
+         "security": "Repeated failures from one MAC can indicate an attack or a misconfigured device.",
+         "server": "RADIUS/ISE 'Live Logs' shows the exact failure reason."},
+        ["Check the RADIUS server failure reason for this identity", "Verify certificates/time on the supplicant"],
+        ["Configure a remediation VLAN and alert on failure spikes"], "eap.code == 4"),
+    "dot1x_incomplete": K(
+        "802.1X exchange did not finish", "Security", "EAPOL", "medium",
+        ["Supplicant not configured/responding", "RADIUS server unreachable or slow (authenticator times out)",
+         "EAP-TLS fragments lost (large certificate chains through a small MTU)"],
+        {"client": "Port stays in 'authenticating'; after timeout falls back to MAB or guest VLAN.",
+         "network": "Check authenticator ↔ RADIUS reachability."},
+        ["Check 'show authentication sessions' and RADIUS reachability", "Test the supplicant configuration"],
+        ["Tune dot1x timers; configure critical-auth VLAN for RADIUS outages"], "eapol"),
+    "dot1x_weak_method": K(
+        "Weak EAP method", "Security", "EAP", "high",
+        ["EAP-MD5 or cleartext methods allowed in the RADIUS policy"],
+        {"security": "EAP-MD5 has no server authentication (rogue authenticator attacks), derives no keys (unusable for Wi-Fi/MACsec) "
+                     "and the challenge/response can be cracked offline."},
+        ["Move clients to EAP-TLS or PEAP/EAP-TEAP with server certificate validation"], ["Remove MD5 from allowed protocols"], "eap.type == 4"),
+    "dot1x_method_nak": K(
+        "EAP method negotiation mismatch", "Security", "EAP", "low",
+        ["Server proposes a method the supplicant is not configured for"],
+        {"security": "Authentication is delayed or fails; the NAK lists what the client supports."},
+        ["Align allowed protocols on the RADIUS server with supplicant configuration"], ["Standardize one EAP method per device class"], "eap.type == 3"),
+    "radius_summary": K(
+        "RADIUS transactions", "Security", "RADIUS", "info",
+        ["Normal operation: the NAS (switch/AP/VPN) sends Access-Request; the server answers Challenge (multi-round EAP), Accept or Reject; accounting records session start/stop"],
+        {"security": "RADIUS decides who gets on the network and with which VLAN/ACL.",
+         "network": "UDP 1812/1813 must be reachable from every NAS to the server."},
+        ["Compare results with the RADIUS server logs"], ["Configure at least two RADIUS servers with dead-time detection"], "radius"),
+    "radius_reject": K(
+        "RADIUS Access-Reject", "Security", "RADIUS", "high",
+        ["Invalid credentials, unknown user/device, failed authorization policy, shared-secret mismatch"],
+        {"security": "Access denied by policy — check whether expected.", "client": "Device cannot get on the network."},
+        ["Read the failure reason on the RADIUS server", "Verify the NAS shared secret"], ["Alert on reject spikes"], "radius.code == 3"),
+    "radius_no_response": K(
+        "RADIUS server did not answer", "Security", "RADIUS", "high",
+        ["Server down or unreachable", "NAS not defined on the server / wrong shared secret (server silently drops)",
+         "Firewall blocking UDP 1812/1813"],
+        {"network": "All new authentications fail (or use critical VLAN) until the NAS fails over.",
+         "security": "Unanswered requests are the classic symptom of a shared-secret mismatch."},
+        ["Check server reachability and NAS client definition", "Verify the shared secret"],
+        ["Redundant RADIUS servers, 'radius-server dead-criteria', critical-auth VLAN"], "radius.code == 1"),
+    "radius_slow": K(
+        "Slow RADIUS responses", "Security", "RADIUS", "medium",
+        ["Overloaded RADIUS server, slow back-end (AD/LDAP), WAN latency"],
+        {"client": "Long delay before getting network access; NAS may time out and retry."},
+        ["Check RADIUS server load and identity-store latency"], ["Place policy nodes close to NADs"], "radius"),
+
+    # ============================================================== IPv6 ===
+    "ipv6_ra_summary": K(
+        "IPv6 router advertisements", "Network", "ICMPv6", "info",
+        ["Normal operation: routers periodically multicast RAs with prefixes and flags; hosts build addresses (SLAAC) or use DHCPv6 per the M/O flags"],
+        {"network": "The RA decides every host's IPv6 address, default gateway and address-assignment method.",
+         "security": "Anyone on the link can send an RA — RA Guard protects hosts."},
+        ["Verify prefixes and M/O flags match the design"], ["Enable IPv6 RA Guard on access switches"], "icmpv6.type == 134"),
+    "ipv6_multiple_ra_sources": K(
+        "Multiple routers advertise different IPv6 prefixes (possible rogue RA)", "Security", "ICMPv6", "medium",
+        ["Rogue or misconfigured device sending RAs (e.g. Windows ICS, lab router)", "Two routers with inconsistent configuration"],
+        {"security": "Hosts may take a default route through an attacker (MITM) or an address from a bogus prefix.",
+         "client": "Intermittent IPv6 connectivity depending on which RA was received last."},
+        ["Identify the unexpected router by MAC", "Enable RA Guard / 'ipv6 nd raguard' on access ports"], ["First-hop security (RA Guard, DHCPv6 Guard)"],
+        "icmpv6.type == 134"),
+    "ipv6_rs_no_ra": K(
+        "Router solicitations not answered", "Network", "ICMPv6", "medium",
+        ["No IPv6 router on the link, 'ipv6 nd ra suppress' configured, or 'ipv6 unicast-routing' missing on the router"],
+        {"client": "Host has only a link-local address: no global IPv6 connectivity and no default route."},
+        ["Enable 'ipv6 unicast-routing' and IPv6 on the gateway interface"], ["Monitor RA presence per VLAN"], "icmpv6.type == 133"),
+    "ipv6_dad_conflict": K(
+        "IPv6 duplicate address", "Network", "ICMPv6", "high",
+        ["Static address configured twice", "Cloned VM with identical interface ID"],
+        {"client": "The host that detects the duplicate disables the address."},
+        ["Find the owner of the address (NA source MAC) and re-address one host"], ["Use SLAAC privacy/stable addresses or DHCPv6 reservations"],
+        "icmpv6.type == 135 && ipv6.src == ::"),
+    "ipv6_ns_unanswered": K(
+        "IPv6 neighbor not answering", "Network", "ICMPv6", "low",
+        ["Target host down or not on this link", "Wrong prefix length / on-link assumption", "ND cache exhaustion or filtering"],
+        {"network": "IPv6 equivalent of an unanswered ARP: packets to that address are dropped."},
+        ["Verify the target is up and on the same link"], ["Monitor ND table size on routers"], "icmpv6.type == 135"),
+    "ipv6_nd_summary": K(
+        "IPv6 neighbor discovery", "Network", "ICMPv6", "info",
+        ["Normal operation: NS to the solicited-node multicast address, NA returns the MAC; new addresses are first checked with DAD (NS from ::)"],
+        {"network": "Replaces ARP; one multicast group per address keeps the lookup off other hosts."},
+        ["None"], ["None"], "icmpv6.type == 135 || icmpv6.type == 136"),
+
+    # =============================================================== QoS ===
+    "qos_dscp_summary": K(
+        "QoS markings (DSCP)", "Network", "IP", "info",
+        ["Normal operation: the edge classifies and marks traffic; every hop queues by DSCP (EF = voice, AF4x = video, CS6 = routing, AF1x = bulk)"],
+        {"network": "Markings only help if every hop trusts and queues by them; routing protocols normally carry CS6.",
+         "application": "Wrongly marked traffic competes in the wrong queue."},
+        ["Compare markings with the QoS policy ('show policy-map interface')"], ["Mark at the trust boundary, re-mark untrusted traffic"],
+        "ip.dsfield.dscp != 0"),
+    "qos_ef_misuse": K(
+        "Non-voice traffic marked EF", "Network", "IP", "low",
+        ["Classification policy marks management/bulk TCP (e.g. Telnet/SSH) as EF", "Endpoint application sets EF itself and is trusted"],
+        {"network": "EF is served by the strict-priority (LLQ) queue; non-voice traffic there can starve real voice or be policed.",
+         "application": "Real-time traffic suffers jitter when the priority queue fills."},
+        ["Re-mark non-real-time traffic (e.g. CS2 for management)"], ["Only trust EF from voice VLANs / phones"], "ip.dsfield.dscp == 46 && tcp"),
 }
 
 

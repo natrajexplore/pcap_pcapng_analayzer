@@ -5,7 +5,7 @@ import socket
 import struct
 
 from .packet import Packet, TCPInfo
-from .protocols import bgp, dhcp, dns, eigrp, fhrp, http, isis, l2, ospf, rip, tls
+from .protocols import auth, bgp, dhcp, dns, eigrp, fhrp, http, isis, l2, l2ctl, mcast, ospf, rip, tls, tunnel, wlan
 from .reader import RawFrame
 
 IP_PROTOS = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 51: "AH", 58: "ICMPv6",
@@ -44,9 +44,11 @@ def dissect(no: int, frame: RawFrame) -> Packet:
             _ethertype(p, struct.unpack("!H", buf[14:16])[0], buf[16:])
         elif lt == 276:  # Linux cooked SLL2
             _ethertype(p, struct.unpack("!H", buf[0:2])[0], buf[20:])
+        elif lt in (105, 127):  # IEEE 802.11 (127: with radiotap header)
+            _wlan(p, buf, lt == 127)
         else:
             p.protocol = f"LINKTYPE_{lt}"
-    except (struct.error, IndexError, ValueError) as exc:  # malformed packet
+    except (struct.error, IndexError, ValueError, OSError) as exc:  # malformed packet (inet_ntoa raises OSError)
         p.tags.append("malformed")
         p.info = p.info or f"[Malformed packet: {exc.__class__.__name__}]"
     if not p.info:
@@ -54,7 +56,28 @@ def dissect(no: int, frame: RawFrame) -> Packet:
     return p
 
 
+def _wlan(p: Packet, buf: bytes, radiotap: bool) -> None:
+    r = wlan.parse(buf, radiotap)
+    if r is None:
+        p.protocol = "802.11"
+        return
+    d, etype, payload = r
+    p.layers["wlan"] = d
+    p.eth_src, p.eth_dst = d["src"], d["dst"]
+    p.protocol = "802.11"
+    p.info = f"802.11 {d['type']}" + (" (protected)" if d["protected"] else "")
+    if etype is not None:
+        _ethertype(p, etype, payload)
+
+
 def _ethernet(p: Packet, buf: bytes) -> None:
+    isl = l2ctl.parse_isl(buf)
+    if isl is not None:                  # Cisco ISL trunk: decode the encapsulated frame
+        vlan, inner = isl
+        p.layers["isl"] = {"vlan": vlan}
+        _ethernet(p, inner)
+        p.vlan = vlan
+        return
     p.eth_dst, p.eth_src = l2.mac(buf[0:6]), l2.mac(buf[6:12])
     p.protocol = "ETH"
     etype = struct.unpack("!H", buf[12:14])[0]
@@ -79,9 +102,32 @@ def _ethernet(p: Packet, buf: bytes) -> None:
                 p.protocol = "ISIS"
                 p.info = isis.info(d)
                 return
+        if llc == b"\xaa\xaa\x03" and buf[off + 3:off + 6] == l2ctl.CISCO_OUI:
+            if _cisco_snap(p, struct.unpack("!H", buf[off + 6:off + 8])[0], buf[off + 8:off + etype]):
+                return
         p.protocol = "LLC"
         return
     _ethertype(p, etype, buf[off:])
+
+
+def _cisco_snap(p: Packet, pid: int, body: bytes) -> bool:
+    if pid == 0x2000:
+        d, name, info = l2ctl.parse_cdp(body), "CDP", l2ctl.cdp_info
+    elif pid == 0x2004:
+        d, name, info = l2ctl.parse_dtp(body), "DTP", l2ctl.dtp_info
+    elif pid == 0x010B:                  # PVST+: a normal BPDU followed by the VLAN TLV
+        d, name, info = l2.parse_stp(body), "STP", l2.stp_info
+        if d:
+            d["pvst"] = True
+            d["vlan"] = l2ctl.pvst_vlan(body) or p.vlan
+    else:
+        return False
+    if not d:
+        return False
+    p.layers[name.lower()] = d
+    p.protocol = name
+    p.info = info(d)
+    return True
 
 
 def _ethertype(p: Packet, etype: int, buf: bytes) -> None:
@@ -96,6 +142,18 @@ def _ethertype(p: Packet, etype: int, buf: bytes) -> None:
             p.info = l2.arp_info(d)
     elif etype == 0x88CC:
         p.protocol = "LLDP"
+        d = l2ctl.parse_lldp(buf)
+        if d:
+            p.layers["lldp"] = d
+            p.info = l2ctl.lldp_info(d)
+    elif etype == 0x888E:
+        p.protocol = "EAPOL"
+        d = auth.parse_eapol(buf)
+        if d:
+            p.layers["eapol"] = d
+            p.info = auth.eapol_info(d)
+    elif etype in l2ctl.ETHERTYPE_LABELS:
+        p.protocol = l2ctl.ETHERTYPE_LABELS[etype]
     else:
         p.protocol = f"0x{etype:04x}"
 
@@ -204,9 +262,33 @@ def _l4(p: Packet, proto: int, buf: bytes, wire_l4: int | None = None) -> None:
             p.layers["eigrp"] = d
             p.protocol = "EIGRP"
             p.info = eigrp.info(d)
+    elif proto == 103 and (d := mcast.parse_pim(buf)):
+        _set(p, "pim", d, mcast.pim_info(d))
+    elif proto == 2 and (d := mcast.parse_igmp(buf)):
+        _set(p, "igmp", d, mcast.igmp_info(d))
+    elif proto == 47 and (r := tunnel.parse_gre(buf)) and r[0]["proto"] in (0x0800, 0x86DD):
+        g, off = r
+        _decap(p, "gre", g)
+        _ip(p, buf[off:])
+        if p.protocol in ("IPv4", "IPv6"):
+            p.protocol = "GRE"
+        p.info = f"GRE {g['outer_src']} → {g['outer_dst']} | {p.info or p.protocol}"
     else:
         p.protocol = IP_PROTOS.get(proto, f"IP-{proto}")
         p.info = p.protocol
+
+
+def _decap(p: Packet, name: str, d: dict) -> None:
+    """Record the outer (tunnel) header, then clear the fields the inner packet will fill."""
+    d.update(outer_src=p.src, outer_dst=p.dst, outer_ttl=p.ttl, outer_len=p.ip_len, outer_df=p.ip_df,
+             outer_dscp=p.dscp, outer_sport=p.sport, outer_dport=p.dport,
+             outer_eth_src=p.eth_src, outer_eth_dst=p.eth_dst)   # VXLAN replaces the MACs with the inner frame's
+    p.layers[name] = d
+    p.tags.append("tunneled")
+    p.src = p.dst = p.ttl = p.ip_proto = p.ip_len = p.ip_id = p.ip_version = p.sport = p.dport = None
+    p.ip_df = p.ip_mf = False
+    p.ip_frag_offset = p.dscp = 0
+    p.payload = b""
 
 
 def _tcp_options(buf: bytes) -> dict:
@@ -275,6 +357,17 @@ def _tcp_app(p: Packet, payload: bytes) -> None:
 
 def _udp_app(p: Packet, payload: bytes) -> None:
     ports = (p.sport, p.dport)
+    if p.dport == tunnel.VXLAN_PORT and (d := tunnel.parse_vxlan(payload)):
+        _decap(p, "vxlan", d)
+        _ethernet(p, payload[8:])
+        p.info = f"VXLAN VNI {d['vni']} {d['outer_src']} → {d['outer_dst']} | {p.info or p.protocol}"
+        if p.protocol in ("ETH", "IPv4", "IPv6"):
+            p.protocol = "VXLAN"
+        return
+    if ports[0] in auth.RADIUS_PORTS or ports[1] in auth.RADIUS_PORTS:
+        d = auth.parse_radius(payload)
+        if d:
+            return _set(p, "radius", d, auth.radius_info(d))
     if 53 in ports or 5353 in ports:
         d = dns.parse(payload)
         if d:

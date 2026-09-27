@@ -7,8 +7,10 @@ from collections import Counter, defaultdict
 
 from . import __version__
 from .correlate import correlate
+from .path import infer as infer_path
+from .scenarios import TOPICS, for_capture as scenario_topics
 from .decode import decode_reassembled, dissect
-from .experts import dhcp, dns, network, routing, security, tcp, web
+from .experts import access, dhcp, dns, ipv6, multicast, network, routing, security, switching, tcp, tunnels, web
 from .findings import SEVERITY_ORDER, sort_findings
 from .flows import FlowTracker
 from .reassembly import Reassembler
@@ -18,7 +20,7 @@ from .tlsdecrypt import HAVE_CRYPTO, KeyLog
 MZ_STUB = b"This program cannot be run in DOS mode"
 
 BAD_TCP_IGNORE = {"window_update", "keep_alive", "keep_alive_ack"}
-ROUTING_PROTOS = {"OSPF", "EIGRP", "BGP", "RIP", "STP", "VRRP", "HSRP", "ISIS", "PIM", "IGMP"}
+ROUTING_PROTOS = {"OSPF", "EIGRP", "BGP", "RIP", "STP", "VRRP", "HSRP", "ISIS", "PIM", "IGMP", "CDP", "LLDP", "DTP"}
 
 
 def color_rule(p) -> str:
@@ -89,6 +91,7 @@ class Analysis:
         self.t0 = 0.0
         self._by_no: dict = {}
         self.elapsed = 0.0
+        self.path: dict | None = None
 
     def pkt(self, no):
         return self._by_no.get(no)
@@ -165,7 +168,7 @@ class Analysis:
         if sliced:
             self.warnings.append(f"{sliced} packets were sliced by the capture snaplen; TCP analysis uses IP lengths, "
                                  "but application-layer decoding (HTTP/TLS/DNS over TCP) may be incomplete.")
-        for mod in (dhcp, dns, network, tcp, web, routing, security):
+        for mod in (dhcp, dns, network, tcp, web, routing, switching, multicast, tunnels, access, ipv6, security):
             try:
                 mod.run(self)
             except Exception as exc:  # an expert failure must not kill the whole report
@@ -174,13 +177,20 @@ class Analysis:
         for i, f in enumerate(self.findings):
             f.uid = f"F{i + 1:03d}"
         self.root_causes = correlate(self)
+        try:
+            self.path = infer_path(self, os.path.basename(self.source))
+        except Exception as exc:  # path inference is best effort and must not break the report
+            self.warnings.append(f"path inference failed: {exc!r}")
         self.elapsed = time.time() - start
         return self
 
     # ------------------------------------------------------------ summary ---
     def stats(self) -> dict:
         pk = self.packets
-        dur = (pk[-1].ts - pk[0].ts) if len(pk) > 1 else 0.0
+        # min/max, not first/last: merged multi-interface captures are not always in time order
+        tmin = min((p.ts for p in pk), default=0.0)
+        tmax = max((p.ts for p in pk), default=0.0)
+        dur = tmax - tmin
         total_bytes = sum(p.wirelen for p in pk)
         protos = Counter(p.protocol for p in pk)
         layers = Counter()
@@ -222,16 +232,17 @@ class Analysis:
         eps.sort(key=lambda e: -(e["tx_bytes"] + e["rx_bytes"]))
         buckets = max(1, min(120, int(dur) + 1))
         width = dur / buckets if dur else 1
-        timeline = [{"t": round(i * width, 3), "pkts": 0, "bytes": 0, "bad": 0} for i in range(buckets)]
+        base = tmin - self.t0          # timeline t stays on the rel_ts axis used everywhere else
+        timeline = [{"t": round(base + i * width, 3), "pkts": 0, "bytes": 0, "bad": 0} for i in range(buckets)]
         for p in pk:
-            i = min(buckets - 1, int(p.rel_ts / width)) if width else 0
+            i = min(buckets - 1, int((p.ts - tmin) / width))
             timeline[i]["pkts"] += 1
             timeline[i]["bytes"] += p.wirelen
             if p.tcp and set(p.tcp.analysis) - BAD_TCP_IGNORE or "icmp" in p.layers and p.layers["icmp"]["type"] in (3, 11):
                 timeline[i]["bad"] += 1
         sev = Counter(f.severity for f in self.findings)
         return {"packets": len(pk), "bytes": total_bytes, "duration": round(dur, 6),
-                "start": pk[0].ts if pk else None, "end": pk[-1].ts if pk else None,
+                "start": tmin if pk else None, "end": tmax if pk else None,
                 "avg_pps": round(len(pk) / dur, 2) if dur else len(pk),
                 "avg_bps": round(total_bytes * 8 / dur) if dur else 0,
                 "protocols": protos.most_common(), "layers": layers.most_common(), "endpoints": eps[:200],
@@ -255,6 +266,7 @@ class Analysis:
 
     def to_dict(self, packet_limit: int = 5000) -> dict:
         streams = [s.to_dict() for s in self.flows.streams]
+        stats = self.stats()
         return {
             "meta": {"tool": "PacketLens", "version": __version__, "source": os.path.basename(self.source),
                      "generated": time.strftime("%Y-%m-%d %H:%M:%S"), "analysis_seconds": round(self.elapsed, 3),
@@ -262,7 +274,7 @@ class Analysis:
                      "reassembly": self.reassembly,
                      "tls_decrypted_sessions": sum(1 for x in self.tls_decrypt.values() if x["records"]),
                      "keylog_entries": len(self.keylog) if self.keylog is not None else 0},
-            "stats": self.stats(),
+            "stats": stats,
             "root_causes": [r.to_dict() for r in self.root_causes],
             "findings": [f.to_dict() for f in self.findings],
             "streams": streams,
@@ -280,6 +292,9 @@ class Analysis:
             "arp": self.arp_table,
             "packets": [self._pkt_row(p) for p in self.packets[:packet_limit]],
             "packets_truncated": len(self.packets) > packet_limit,
+            "path": self.path,
+            "scenarios": [{"id": t, **TOPICS[t]} for t in scenario_topics(stats, self.findings,
+                                                                            os.path.basename(os.path.dirname(self.source)))],
         }
 
     @staticmethod

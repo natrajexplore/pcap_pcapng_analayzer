@@ -3,6 +3,7 @@
     packetlens analyze capture.pcapng [--html report.html] [--json out.json]
     packetlens demo [--out demo.pcapng] [--html demo.html]
     packetlens serve [--host 127.0.0.1] [--port 8080]
+    packetlens batch pcap_folder/ [--out packetlens-reports]
 """
 from __future__ import annotations
 
@@ -142,8 +143,22 @@ def main(argv=None) -> int:
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8080)
     sv.add_argument("--max-mb", type=int, default=200)
+    bt = sub.add_parser("batch", help="analyze every capture under a folder and build an index of 3D reports")
+    bt.add_argument("folder")
+    bt.add_argument("--out", default="packetlens-reports", help="output folder (default: packetlens-reports)")
+    bt.add_argument("--max-packets", type=int, default=None)
     args = ap.parse_args(argv)
 
+    if args.cmd == "batch":
+        from .batch import run as run_batch
+        if not os.path.isdir(args.folder):
+            print(f"error: {args.folder} is not a folder", file=sys.stderr)
+            return 1
+        print(f"Analyzing captures under {args.folder} …")
+        res = run_batch(args.folder, args.out, args.max_packets)
+        print(f"\n{res['captures']} captures analyzed ({res['errors']} errors, {res['skipped_pkt']} .pkt files skipped).")
+        print(f"Open: {res['index']}")
+        return 1 if res["errors"] else 0
     if args.cmd == "serve":
         from .web import serve
         serve(args.host, args.port, args.max_mb)

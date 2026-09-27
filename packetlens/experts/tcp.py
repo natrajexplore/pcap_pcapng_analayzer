@@ -208,8 +208,7 @@ def run(ctx) -> None:
     if no_sack:
         F.append(make("tcp_no_sack", f"{len(no_sack)} of {len(hs)} handshakes without SACK.",
                       packets=[s.first_no for s in no_sack[:10]], ts=no_sack[0].first_ts))
-    small = [s for s in hs if min(x for x in (s.c.mss, s.s.mss) if x) < 1400] if hs else []
-    small = [s for s in small if s.c.mss and s.s.mss]
+    small = [s for s in hs if s.c.mss and s.s.mss and min(s.c.mss, s.s.mss) < 1400]
     if small:
         F.append(make("tcp_small_mss", f"{len(small)} handshake(s) negotiated MSS < 1400 "
                                        f"(e.g. stream {small[0].id}: client {small[0].c.mss} / server {small[0].s.mss}).",
