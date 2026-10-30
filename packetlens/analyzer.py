@@ -10,7 +10,7 @@ from .correlate import correlate
 from .path import infer as infer_path
 from .scenarios import TOPICS, for_capture as scenario_topics
 from .decode import decode_reassembled, dissect
-from .experts import access, dhcp, dns, ipv6, multicast, network, routing, security, switching, tcp, tunnels, web
+from .experts import access, crypto, dhcp, dns, ipv6, multicast, network, routing, security, switching, tcp, tunnels, web
 from .findings import SEVERITY_ORDER, sort_findings
 from .flows import FlowTracker
 from .reassembly import Reassembler
@@ -40,6 +40,8 @@ def color_rule(p) -> str:
         return "fin"
     if "tls" in p.layers and ("client_hello" in p.layers["tls"] or "server_hello" in p.layers["tls"]):
         return "tls"
+    if any(k in p.layers for k in ("ssh", "ike", "esp", "macsec")) or (p.layers.get("eapol") or {}).get("mka"):
+        return "crypto"
     if "http" in p.layers or "http2" in p.layers:
         return "http"
     if "dns" in p.layers:
@@ -92,6 +94,11 @@ class Analysis:
         self._by_no: dict = {}
         self.elapsed = 0.0
         self.path: dict | None = None
+        self.crypto: dict | None = None          # crypto / PQC inventory (experts.crypto)
+        self.certificates: list = []
+        self.esp_sas: list = []
+        self.macsec_scs: list = []
+        self.mka: list = []
 
     def pkt(self, no):
         return self._by_no.get(no)
@@ -168,7 +175,7 @@ class Analysis:
         if sliced:
             self.warnings.append(f"{sliced} packets were sliced by the capture snaplen; TCP analysis uses IP lengths, "
                                  "but application-layer decoding (HTTP/TLS/DNS over TCP) may be incomplete.")
-        for mod in (dhcp, dns, network, tcp, web, routing, switching, multicast, tunnels, access, ipv6, security):
+        for mod in (dhcp, dns, network, tcp, web, routing, switching, multicast, tunnels, access, crypto, ipv6, security):
             try:
                 mod.run(self)
             except Exception as exc:  # an expert failure must not kill the whole report
@@ -293,6 +300,7 @@ class Analysis:
             "packets": [self._pkt_row(p) for p in self.packets[:packet_limit]],
             "packets_truncated": len(self.packets) > packet_limit,
             "path": self.path,
+            "crypto": self.crypto,
             "scenarios": [{"id": t, **TOPICS[t]} for t in scenario_topics(stats, self.findings,
                                                                             os.path.basename(os.path.dirname(self.source)))],
         }

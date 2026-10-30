@@ -39,6 +39,12 @@ def text_report(a, color: bool = True, verbose: bool = False, width: int = 100) 
     if a.capture_point:
         w(f"  Capture point: {a.capture_point}")
     w("  Protocols: " + ", ".join(f"{k} {v}" for k, v in st["protocols"][:12]))
+    rd = (a.crypto or {}).get("readiness") or {}
+    if rd.get("known"):
+        c = rd["counts"]
+        w(f"  PQC readiness: {rd['score']}/100 · {rd['quantum_safe']} quantum-safe, {c.get('draft', 0)} draft, "
+          f"{c.get('classical', 0)} classical, {c.get('weak', 0)} weak key exchange(s) · "
+          + ", ".join(f"{p} {sum(v.values())}" for p, v in rd["by_protocol"].items()))
     for warn in a.warnings:
         w(_c(f"  ! {warn}", COL["medium"], color))
     w()

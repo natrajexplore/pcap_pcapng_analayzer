@@ -5,7 +5,8 @@ import socket
 import struct
 
 from .packet import Packet, TCPInfo
-from .protocols import auth, bgp, dhcp, dns, eigrp, fhrp, http, isis, l2, l2ctl, mcast, ospf, rip, tls, tunnel, wlan
+from .protocols import (auth, bgp, dhcp, dns, eigrp, fhrp, http, ike, isis, l2, l2ctl, macsec, mcast, ospf, rip, ssh, tls,
+                        tunnel, wlan)
 from .reader import RawFrame
 
 IP_PROTOS = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 51: "AH", 58: "ICMPv6",
@@ -152,6 +153,8 @@ def _ethertype(p: Packet, etype: int, buf: bytes) -> None:
         if d:
             p.layers["eapol"] = d
             p.info = auth.eapol_info(d)
+    elif etype == macsec.ETHERTYPE and (d := macsec.parse_sectag(buf)):
+        _set(p, "macsec", d, macsec.sectag_info(d))
     elif etype in l2ctl.ETHERTYPE_LABELS:
         p.protocol = l2ctl.ETHERTYPE_LABELS[etype]
     else:
@@ -262,6 +265,8 @@ def _l4(p: Packet, proto: int, buf: bytes, wire_l4: int | None = None) -> None:
             p.layers["eigrp"] = d
             p.protocol = "EIGRP"
             p.info = eigrp.info(d)
+    elif proto == 50 and (d := ike.parse_esp(buf)):
+        _set(p, "esp", d, ike.info(d))
     elif proto == 103 and (d := mcast.parse_pim(buf)):
         _set(p, "pim", d, mcast.pim_info(d))
     elif proto == 2 and (d := mcast.parse_igmp(buf)):
@@ -345,6 +350,10 @@ def _tcp_app(p: Packet, payload: bytes) -> None:
         d = tls.parse(payload)
         if d:
             return _set(p, "tls", d, tls.info(d))
+    if payload.startswith(b"SSH-") or 22 in ports and len(payload) > 21 and payload[5] == 20:
+        d = ssh.parse(payload if payload.startswith(b"SSH-") else payload[:4 + int.from_bytes(payload[:4], "big")])
+        if d:
+            return _set(p, "ssh", {"messages": [d]}, ssh.info({"messages": [d]}))
     if 53 in ports and len(payload) > 14:
         d = dns.parse(payload[2:])
         if d:
@@ -368,6 +377,10 @@ def _udp_app(p: Packet, payload: bytes) -> None:
         d = auth.parse_radius(payload)
         if d:
             return _set(p, "radius", d, auth.radius_info(d))
+    if (500 in ports or 4500 in ports) and (d := ike.parse(payload, natt=4500 in ports)):
+        _set(p, "esp" if d["kind"] == "esp" else "ike", d, ike.info(d))
+        p.protocol = "ESP" if d["kind"] == "esp" else "ISAKMP"
+        return
     if 53 in ports or 5353 in ports:
         d = dns.parse(payload)
         if d:

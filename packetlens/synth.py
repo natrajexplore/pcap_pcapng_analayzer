@@ -687,7 +687,9 @@ def build_tls_decryptable(g: "Gen", t0: float = 320.0) -> str:
 
 
 def write_demo(path: str, fmt: str = "pcapng") -> int:
+    from . import synth_crypto
     g = build_demo()
     build_extended(g)
+    synth_crypto.build_all(g)
     keylog = build_tls_decryptable(g)        # keys embedded in the pcapng (Decryption Secrets Block)
     return g.save(path, fmt, keylog=keylog or None)

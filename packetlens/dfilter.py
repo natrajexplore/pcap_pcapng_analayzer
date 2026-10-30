@@ -15,6 +15,8 @@ from __future__ import annotations
 import ipaddress
 import re
 
+from .protocols import auth, pqc
+
 TOKEN = re.compile(r"""\s*(?:
     (?P<str>"(?:[^"\\]|\\.)*")|
     (?P<op>==|!=|>=|<=|&&|\|\||[()!<>{}~,])|
@@ -142,6 +144,36 @@ FIELDS = {
     "radius.code": _layer("radius", "code_num"), "radius.User_Name": _layer("radius", "user"),
     "vxlan.vni": _layer("vxlan", "vni"), "gre.proto": _layer("gre", "proto"),
     "stp.flags.tc": lambda p, raw: [int(p.layers["stp"]["tc"])] if "stp" in p.layers else [],
+    # crypto / post-quantum
+    "tls.handshake.extensions_supported_group": lambda p, raw: (p.layers.get("tls", {}).get("client_hello") or {}).get("group_codes", []),
+    "tls.handshake.extensions_key_share_group": lambda p, raw: [k["code"] for k in (p.layers.get("tls", {}).get("client_hello") or {}).get("key_shares", [])]
+                                                               + _ip_list((p.layers.get("tls", {}).get("server_hello") or {}).get("group_code")),
+    "tls.handshake.sig_hash_alg": lambda p, raw: (p.layers.get("tls", {}).get("client_hello") or {}).get("sig_codes", []),
+    "tls.pqc": lambda p, raw: [1] if "tls" in p.layers and (
+        (p.layers["tls"].get("client_hello") or {}).get("pqc_offered") or
+        (p.layers["tls"].get("server_hello") or {}).get("group_status") in ("pqc", "hybrid", "draft")) else [],
+    "tls.ech": lambda p, raw: [1] if (p.layers.get("tls", {}).get("client_hello") or {}).get("ech") else [],
+    "x509sat.CommonName": lambda p, raw: [c["cn"] for c in p.layers.get("tls", {}).get("certificates", []) if c.get("cn")],
+    "x509af.algorithm": lambda p, raw: [c["sig_alg"] for c in p.layers.get("tls", {}).get("certificates", [])],
+    "ssh.message_code": lambda p, raw: [m["code"] for m in p.layers["ssh"]["messages"] if "code" in m] if "ssh" in p.layers else [],
+    "ssh.protocol": lambda p, raw: [m["banner"] for m in p.layers["ssh"]["messages"] if m["type"] == "banner"] if "ssh" in p.layers else [],
+    "ssh.kex_algorithms": lambda p, raw: [",".join(m["kex"]) for m in p.layers["ssh"]["messages"] if m.get("kex")] if "ssh" in p.layers else [],
+    "ssh.pqc": lambda p, raw: [1] if "ssh" in p.layers and any(
+        pqc.ssh_kex(k) in pqc.QUANTUM_SAFE for m in p.layers["ssh"]["messages"] for k in m.get("kex", [])) else [],
+    "isakmp.version": _layer("ike", "version"), "isakmp.exch_type": _layer("ike", "exchange_num"),
+    "isakmp.ispi": _layer("ike", "ispi"), "isakmp.rspi": _layer("ike", "rspi"),
+    "isakmp.notify.msgtype": lambda p, raw: [n["code"] for n in p.layers["ike"]["notify"]] if "ike" in p.layers else [],
+    "isakmp.notify.error": lambda p, raw: [1] if "ike" in p.layers and any(n["error"] for n in p.layers["ike"]["notify"]) else [],
+    "isakmp.pqc": lambda p, raw: [1] if "ike" in p.layers and any(
+        t["status"] == "pqc" for pr in p.layers["ike"]["proposals"] for t in pr["transforms"]) else [],
+    "esp.spi": lambda p, raw: [int(p.layers["esp"]["spi"], 16)] if p.layers.get("esp", {}).get("kind") == "esp" else [],
+    "esp.sequence": lambda p, raw: [p.layers["esp"]["seq"]] if p.layers.get("esp", {}).get("kind") == "esp" else [],
+    "macsec.an": _layer("macsec", "an"), "macsec.pn": _layer("macsec", "pn"), "macsec.sci": _layer("macsec", "sci"),
+    "macsec.encrypted": lambda p, raw: [int(p.layers["macsec"]["encrypted"])] if "macsec" in p.layers else [],
+    "eapol.type": lambda p, raw: [{"EAP-Packet": 0, "EAPOL-Start": 1, "EAPOL-Logoff": 2, "EAPOL-Key": 3, "EAPOL-MKA": 5}.get(
+        p.layers["eapol"]["type"], -1)] if "eapol" in p.layers else [],
+    "eap.type": lambda p, raw: [m for m in [{v: k for k, v in auth.EAP_METHODS.items()}.get(
+        (p.layers["eapol"].get("eap") or {}).get("method"))] if m is not None] if "eapol" in p.layers else [],
 }
 # Wireshark tcp.analysis.* expert fields map onto the analyzer's per-packet flags
 ANALYSIS = {"retransmission": "retransmission", "fast_retransmission": "fast_retransmission",
@@ -162,9 +194,13 @@ PROTOCOLS = {
     "llc": lambda p: p.protocol == "LLC", "loop": lambda p: p.protocol == "LOOP",
 }
 for _l in ("arp", "dns", "http", "tls", "dhcp", "bgp", "ospf", "eigrp", "rip", "stp", "isis", "pim", "igmp", "gre", "vxlan",
-           "cdp", "dtp", "lldp", "eapol", "radius"):
+           "cdp", "dtp", "lldp", "eapol", "radius", "ssh", "macsec"):
     PROTOCOLS[_l] = (lambda n: lambda p: n in p.layers)(_l)
 PROTOCOLS["hsrp"] = lambda p: p.protocol == "HSRP"
+PROTOCOLS["isakmp"] = lambda p: "ike" in p.layers
+PROTOCOLS["esp"] = lambda p: p.layers.get("esp", {}).get("kind") == "esp"
+PROTOCOLS["mka"] = lambda p: bool((p.layers.get("eapol") or {}).get("mka"))
+PROTOCOLS["x509af"] = lambda p: bool(p.layers.get("tls", {}).get("certificates"))
 PROTOCOLS["vrrp"] = lambda p: p.protocol == "VRRP"
 PROTOCOLS["ssl"] = PROTOCOLS["tls"]
 PROTOCOLS["bootp"] = PROTOCOLS["dhcp"]

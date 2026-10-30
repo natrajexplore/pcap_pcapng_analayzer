@@ -17,7 +17,7 @@ from .protocols import l2ctl
 TCP_OPTS = {0: "End of Option List", 1: "No-Operation (NOP)", 2: "Maximum segment size", 3: "Window scale",
             4: "SACK permitted", 5: "SACK", 8: "Timestamps"}
 ETYPES = {0x0800: "IPv4", 0x86DD: "IPv6", 0x0806: "ARP", 0x8100: "802.1Q Virtual LAN", 0x88A8: "802.1ad",
-          0x888E: "802.1X Authentication", 0x88CC: "LLDP", 0x9000: "Loopback", 0x6002: "DEC MOP Remote Console",
+          0x888E: "802.1X Authentication", 0x88E5: "802.1AE (MACsec)", 0x88CC: "LLDP", 0x9000: "Loopback", 0x6002: "DEC MOP Remote Console",
           0x8035: "RARP"}
 IP_PROTO = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 51: "AH", 58: "ICMPv6", 88: "EIGRP",
             89: "OSPF", 103: "PIM", 112: "VRRP"}
@@ -381,7 +381,8 @@ def _app_title(name, p):
               "stp": "Spanning Tree Protocol", "isis": "ISO 10589 IS-IS", "cdp": "Cisco Discovery Protocol",
               "dtp": "Dynamic Trunking Protocol", "lldp": "Link Layer Discovery Protocol", "pim": "Protocol Independent Multicast",
               "igmp": "Internet Group Management Protocol", "eapol": "802.1X Authentication", "radius": "RADIUS Protocol",
-              "fhrp": "First Hop Redundancy Protocol"}
+              "fhrp": "First Hop Redundancy Protocol", "ssh": "SSH Protocol", "ike": "Internet Security Association and Key Management Protocol",
+              "esp": "Encapsulating Security Payload", "macsec": "IEEE 802.1AE MACsec"}
     return f"{titles.get(name, name.upper())} — {p.info[:100]}"
 
 

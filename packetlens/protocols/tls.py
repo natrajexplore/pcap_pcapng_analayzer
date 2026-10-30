@@ -1,8 +1,11 @@
-"""TLS record / handshake parser: ClientHello (SNI, ALPN, JA3), ServerHello, Alerts."""
+"""TLS record / handshake parser: ClientHello (SNI, ALPN, JA3, groups, key shares, signature algorithms,
+ECH), ServerHello / HelloRetryRequest (selected key share), Certificate (X.509) and Alerts."""
 from __future__ import annotations
 
 import hashlib
 import struct
+
+from . import pqc, x509
 
 VERSIONS = {0x0300: "SSL 3.0", 0x0301: "TLS 1.0", 0x0302: "TLS 1.1", 0x0303: "TLS 1.2", 0x0304: "TLS 1.3"}
 ALERTS = {0: "close_notify", 10: "unexpected_message", 20: "bad_record_mac", 21: "decryption_failed",
@@ -24,6 +27,10 @@ WEAK_CIPHERS = {
     0xC007: "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
 }
 GREASE = {0x0A0A + 0x1010 * i for i in range(16)}
+HRR_RANDOM = bytes.fromhex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
+EXT_ECH = 0xFE0D
+TLS12_RSA_KX = {0x000A, 0x002F, 0x0035, 0x003C, 0x003D, 0x009C, 0x009D, 0x0004, 0x0005}
+TLS12_DHE_KX = {0x0016, 0x0033, 0x0039, 0x0067, 0x006B, 0x009E, 0x009F, 0xCCAA}
 # Known-bad JA3 fingerprints (from public threat intel; Chris Greer's ThreatHunt profile flags Trickbot).
 KNOWN_BAD_JA3 = {
     "6734f37431670b3ab4292b8f60f29984": "Trickbot",
@@ -69,7 +76,9 @@ def _handshake(frag: bytes, out: dict) -> None:
                 out["client_hello"] = _client_hello(body)
             elif htype == 2:
                 out["server_hello"] = _server_hello(body)
-        except (struct.error, IndexError):
+            elif htype == 11 and len(body) == hlen:
+                out["certificates"] = x509.parse_chain(body)
+        except (struct.error, IndexError, ValueError):
             pass
         off += 4 + hlen
         if hlen == 0 or len(body) < hlen:
@@ -98,7 +107,8 @@ def _client_hello(b: bytes) -> dict:
     off += 1 + b[off]                      # compression methods
     sni = None
     alpn: list[str] = []
-    exts, curves, pfmts, sup_versions = [], [], [], []
+    exts, curves, pfmts, sup_versions, shares, sigs = [], [], [], [], [], []
+    ech = False
     for et, ed in _exts(b, off):
         exts.append(et)
         if et == 0 and len(ed) > 5:
@@ -116,6 +126,16 @@ def _client_hello(b: bytes) -> dict:
             pfmts = list(ed[1:1 + ed[0]])
         elif et == 43 and ed:
             sup_versions = [struct.unpack("!H", ed[1 + i:3 + i])[0] for i in range(0, ed[0], 2)]
+        elif et == 13 and len(ed) >= 2:
+            sigs = [struct.unpack("!H", ed[2 + i:4 + i])[0] for i in range(0, min(struct.unpack("!H", ed[:2])[0], len(ed) - 2), 2)]
+        elif et == 51 and len(ed) >= 2:
+            i, end = 2, min(len(ed), 2 + struct.unpack("!H", ed[:2])[0])
+            while i + 4 <= end:
+                g, kl = struct.unpack("!HH", ed[i:i + 4])
+                shares.append((g, kl))
+                i += 4 + kl
+        elif et == EXT_ECH:
+            ech = True
     ng = lambda xs: [x for x in xs if x not in GREASE]  # noqa: E731
     ja3_str = ",".join([str(ver), "-".join(map(str, ng(ciphers))), "-".join(map(str, ng(exts))),
                         "-".join(map(str, ng(curves))), "-".join(map(str, pfmts))])
@@ -125,7 +145,14 @@ def _client_hello(b: bytes) -> dict:
     return {"version": VERSIONS.get(ver, hex(ver)), "max_version": VERSIONS.get(max_ver, hex(max_ver)),
             "max_version_num": max_ver, "sni": sni, "random": b[2:34].hex(), "alpn": alpn, "ciphers": ciphers,
             "weak_ciphers": [WEAK_CIPHERS[c] for c in ciphers if c in WEAK_CIPHERS],
-            "ja3": ja3, "ja3_str": ja3_str, "known_bad": KNOWN_BAD_JA3.get(ja3)}
+            "ja3": ja3, "ja3_str": ja3_str, "known_bad": KNOWN_BAD_JA3.get(ja3),
+            "groups": [pqc.tls_group(g)[0] for g in ng(curves)], "group_codes": ng(curves),
+            "key_shares": [{"group": pqc.tls_group(g)[0], "code": g, "len": kl, "status": pqc.tls_group(g)[1]}
+                           for g, kl in shares if g not in GREASE],
+            "sig_algs": [pqc.tls_sig(x)[0] for x in ng(sigs)], "sig_codes": ng(sigs),
+            "pqc_offered": [pqc.tls_group(g)[0] for g in ng(curves) if pqc.tls_group(g)[1] in ("pqc", "hybrid", "draft")],
+            "pqc_sigs_offered": [pqc.tls_sig(x)[0] for x in ng(sigs) if pqc.tls_sig(x)[1] == "pqc"],
+            "ech": ech, "length": len(b) + 4}
 
 
 def _server_hello(b: bytes) -> dict:
@@ -135,22 +162,47 @@ def _server_hello(b: bytes) -> dict:
     cipher = struct.unpack("!H", b[off:off + 2])[0]
     off += 3
     alpn = None
+    hrr = b[2:34] == HRR_RANDOM
+    group = None
     for et, ed in _exts(b, off):
         if et == 43 and len(ed) == 2:
             ver = struct.unpack("!H", ed)[0]
         elif et == 16 and len(ed) > 3:
             alpn = ed[3:3 + ed[2]].decode("latin-1")
-    return {"version": VERSIONS.get(ver, hex(ver)), "version_num": ver, "cipher": cipher,
-            "weak_cipher": WEAK_CIPHERS.get(cipher), "random": b[2:34].hex(), "alpn": alpn}
+        elif et == 51 and len(ed) >= 2:          # ServerHello: group + key; HelloRetryRequest: group only
+            group = struct.unpack("!H", ed[:2])[0]
+    d = {"version": VERSIONS.get(ver, hex(ver)), "version_num": ver, "cipher": cipher,
+         "weak_cipher": WEAK_CIPHERS.get(cipher), "random": b[2:34].hex(), "alpn": alpn, "hrr": hrr}
+    if group is not None:
+        d["group"], d["group_status"] = pqc.tls_group(group)
+        d["group_code"] = group
+    return d
+
+
+def key_exchange(sh: dict) -> tuple[str, str]:
+    """(name, PQC status) of the key exchange a ServerHello settled on."""
+    if sh.get("group"):
+        return sh["group"], sh["group_status"]
+    c = sh.get("cipher")
+    if c in TLS12_RSA_KX:
+        return "RSA key transport (no forward secrecy)", "weak"
+    if c in TLS12_DHE_KX:
+        return "DHE", "classical"
+    if c is not None and (0xC000 <= c <= 0xC0FF or 0xCCA8 <= c <= 0xCCA9):
+        return "ECDHE", "classical"
+    return "unknown", "unknown"
 
 
 def info(d: dict) -> str:
     parts = []
     if "client_hello" in d:
         ch = d["client_hello"]
-        parts.append("Client Hello" + (f" (SNI={ch['sni']})" if ch["sni"] else ""))
+        parts.append("Client Hello" + (f" (SNI={ch['sni']})" if ch["sni"] else "") + (" [PQC]" if ch.get("pqc_offered") else ""))
     if "server_hello" in d:
-        parts.append("Server Hello")
+        sh = d["server_hello"]
+        parts.append("Hello Retry Request" if sh.get("hrr") else "Server Hello" + (f" ({sh['group']})" if sh.get("group") else ""))
+    if d.get("certificates"):
+        parts.append(f"Certificate ({d['certificates'][0].get('cn') or 'chain'})")
     if "alert" in d:
         parts.append(f"Alert ({d['alert']['level']}, {d['alert']['description']})")
     if not parts:

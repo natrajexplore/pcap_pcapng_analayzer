@@ -14,7 +14,7 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* packet colouring (after Chris Greer's TCP/ThreatHunt profiles) */
   --c-bad-bg:#121212; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#121212; --c-icmperr-fg:#b7f28a;
-  --c-rst-bg:#f4c7c3; --c-syn-bg:#c9f2c0; --c-fin-bg:#c7dcff; --c-tls-bg:#c8f6f1; --c-http-bg:#e2fbd3;
+  --c-rst-bg:#f4c7c3; --c-syn-bg:#c9f2c0; --c-fin-bg:#c7dcff; --c-tls-bg:#c8f6f1; --c-crypto-bg:#d4e6ff; --c-http-bg:#e2fbd3;
   --c-dns-bg:#fff0cc; --c-dnswarn-bg:#ffd9a0; --c-dnserr-bg:#ffb3b3; --c-arp-bg:#faf0d7; --c-icmp-bg:#fce0ff;
   --c-routing-bg:#fff4d6; --c-tcp-bg:#ecebff; --c-udp-bg:#dcf1ff; --c-bcast-bg:#e6e6e6; --c-cks-bg:#f7c6c6;
 }
@@ -24,7 +24,7 @@
     --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --accent:#3987e5; --series-1:#3987e5; --low:#3987e5;
     --c-bad-bg:#000; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#000; --c-icmperr-fg:#9be36b;
-    --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-http-bg:#22331a;
+    --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-crypto-bg:#14283f; --c-http-bg:#22331a;
     --c-dns-bg:#3a3117; --c-dnswarn-bg:#4a3413; --c-dnserr-bg:#4d1d1d; --c-arp-bg:#34301f; --c-icmp-bg:#3a2340;
     --c-routing-bg:#383119; --c-tcp-bg:#25243b; --c-udp-bg:#172b3a; --c-bcast-bg:#2c2c2c; --c-cks-bg:#4d2020;
   }
@@ -34,7 +34,7 @@
   --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
   --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --accent:#3987e5; --series-1:#3987e5; --low:#3987e5;
   --c-bad-bg:#000; --c-bad-fg:#ff6b6b; --c-icmperr-bg:#000; --c-icmperr-fg:#9be36b;
-  --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-http-bg:#22331a;
+  --c-rst-bg:#4a1f1d; --c-syn-bg:#1f3a1c; --c-fin-bg:#1c2b47; --c-tls-bg:#153b38; --c-crypto-bg:#14283f; --c-http-bg:#22331a;
   --c-dns-bg:#3a3117; --c-dnswarn-bg:#4a3413; --c-dnserr-bg:#4d1d1d; --c-arp-bg:#34301f; --c-icmp-bg:#3a2340;
   --c-routing-bg:#383119; --c-tcp-bg:#25243b; --c-udp-bg:#172b3a; --c-bcast-bg:#2c2c2c; --c-cks-bg:#4d2020;
 }
@@ -101,11 +101,15 @@ details.f .body{padding:10px 14px}
 .pkt td{padding:2px 8px;font-family:var(--mono);font-size:12px;white-space:nowrap;border-bottom:none}
 .pkt.bad_tcp td{background:var(--c-bad-bg);color:var(--c-bad-fg)} .pkt.icmp_error td{background:var(--c-icmperr-bg);color:var(--c-icmperr-fg)}
 .pkt.rst td{background:var(--c-rst-bg)} .pkt.syn td{background:var(--c-syn-bg)} .pkt.fin td{background:var(--c-fin-bg)}
-.pkt.tls td{background:var(--c-tls-bg)} .pkt.http td{background:var(--c-http-bg)} .pkt.dns td{background:var(--c-dns-bg)}
+.pkt.tls td{background:var(--c-tls-bg)} .pkt.crypto td{background:var(--c-crypto-bg)} .pkt.http td{background:var(--c-http-bg)} .pkt.dns td{background:var(--c-dns-bg)}
 .pkt.dns_warn td{background:var(--c-dnswarn-bg)} .pkt.dns_error td{background:var(--c-dnserr-bg)} .pkt.arp td{background:var(--c-arp-bg)}
 .pkt.icmp td{background:var(--c-icmp-bg)} .pkt.routing td{background:var(--c-routing-bg)} .pkt.tcp td{background:var(--c-tcp-bg)}
 .pkt.udp td{background:var(--c-udp-bg)} .pkt.broadcast td{background:var(--c-bcast-bg)} .pkt.checksum td{background:var(--c-cks-bg)}
 .pkt.sel td{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--accent)}
+.qs{display:inline-block;padding:0 7px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid currentColor}
+.qs.q-good{color:var(--good)} .qs.q-med{color:var(--med)} .qs.q-low{color:var(--ink-2)} .qs.q-crit{color:var(--crit)} .qs.q-none{color:var(--ink-2);opacity:.6}
+.qbar{display:flex;height:14px;border-radius:7px;overflow:hidden;gap:2px} .qbar span{display:block}
+.qbar .q-good{background:var(--good)} .qbar .q-med{background:var(--med)} .qbar .q-low{background:var(--ink-2);opacity:.5} .qbar .q-crit{background:var(--crit)}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin:6px 0}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .hbar{display:grid;grid-template-columns:140px 1fr 70px;gap:8px;align-items:center;margin:3px 0;font-size:13px}
@@ -202,7 +206,8 @@ $("#hdr-src").textContent = `${D.meta.source} · ${D.stats.packets.toLocaleStrin
 /* ---------- tabs ---------- */
 const TABS = [["overview","Overview"],["path","Path 3D"],["scen","Scenarios ("+(D.scenarios||[]).length+")"],
   ["rootcause","Root causes ("+D.root_causes.length+")"],["findings","Findings ("+D.findings.length+")"],
-  ["tcp","TCP streams ("+D.streams.length+")"],["app","DNS · DHCP"],["web","Web · URLs · TLS"],["routing","Routing"],
+  ["tcp","TCP streams ("+D.streams.length+")"],["app","DNS · DHCP"],["web","Web · URLs · TLS"],
+  ...(D.crypto&&D.crypto.readiness.sessions?[["crypto","Crypto · PQC"]]:[]),["routing","Routing"],
   ["packets","Packets"],["conv","Conversations · Endpoints"]];
 const nav = $("#tabs"), main = $("#main");
 TABS.forEach(([id,label])=>{ const b=document.createElement("button"); b.textContent=label; b.dataset.tab=id; b.onclick=()=>show(id); nav.appendChild(b);
@@ -426,6 +431,38 @@ R.web = el => {
     {k:"cipher",t:"Cipher",mono:1,f:(v,r)=>r.weak_selected?`<span class="sev high">${esc(r.weak_selected)}</span>`:esc(v||"—")},
     {k:"alpn",t:"ALPN",f:v=>esc((v||[]).join(","))},{k:"handshake_ms",t:"Hello RTT",num:1,f:ms},
     {k:"alert",t:"Alert",f:v=>v?`<span class="sev ${v.level==="fatal"?"critical":"medium"}">${esc(v.description)}</span>`:""},{k:"decryption",t:"Decryption",f:v=>v==null?'<span class="muted">no key log</span>':/^decrypted/.test(v)?`<span class="sev info">${esc(v)}</span>`:`<span class="muted">${esc(v)}</span>`},{k:"ja3",t:"JA3",mono:1,f:(v,r)=>`<span class="small">${esc(v)}</span>${r.known_bad?` <span class="sev critical">${esc(r.known_bad)}</span>`:""}`}], D.tls);
+};
+
+/* ---------- Crypto / PQC ---------- */
+const QS = {pqc:["Post-quantum","good"],hybrid:["Hybrid PQC","good"],draft:["Draft PQC","med"],classical:["Classical","low"],weak:["Weak","crit"],unknown:["Unknown","none"]};
+const qs = v => { const q = QS[v]||QS.unknown; return `<span class="qs q-${q[1]}">${q[0]}</span>`; };
+R.crypto = el => {
+  const C = D.crypto, Rd = C.readiness, n = Math.max(1, Rd.known);
+  const bar = Object.keys(QS).filter(k=>k!=="unknown"&&Rd.counts[k]).map(k=>`<span class="q-${QS[k][1]}" style="flex:${Rd.counts[k]}" title="${QS[k][0]}: ${Rd.counts[k]}"></span>`).join("");
+  el.innerHTML = `<div class="grid g4">
+    <div class="card tile"><div class="k">PQC readiness</div><div class="v">${Rd.score==null?"—":Rd.score+"<span class='muted small'>/100</span>"}</div><div class="muted small">share of key exchanges that are quantum-safe</div></div>
+    <div class="card tile"><div class="k">Quantum-safe</div><div class="v">${Rd.quantum_safe}</div><div class="muted small">hybrid or pure ML-KEM</div></div>
+    <div class="card tile"><div class="k">Harvest-now-decrypt-later exposed</div><div class="v">${Rd.exposed}</div><div class="muted small">classical or weak key exchange</div></div>
+    <div class="card tile"><div class="k">PQC-capable clients</div><div class="v">${Rd.pqc_capable_clients.length}</div><div class="muted small">offered ML-KEM at least once</div></div></div>
+  <div class="card" style="margin-top:12px"><div class="qbar">${bar}</div><div class="legend">${Object.keys(QS).filter(k=>Rd.counts[k]).map(k=>`${qs(k)} ${Rd.counts[k]}`).join(" &nbsp; ")}</div></div>
+  <h2>Key exchanges</h2><div id="cx-s"></div><h2>Certificates</h2><div id="cx-c"></div><div id="cx-l2"></div>`;
+  table($("#cx-s",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"proto",t:"Protocol"},{k:"client",t:"Client",mono:1},{k:"name",t:"Server / peer",mono:1},
+    {k:"kex",t:"Key exchange",mono:1,f:v=>esc(v||"—")},{k:"kex_status",t:"Quantum",f:qs},{k:"offered_status",t:"Best offered",f:qs},
+    {k:"auth",t:"Authentication",mono:1,f:(v,r)=>v?`${esc(v)} ${qs(r.auth_status)}`:"—"},{k:"cipher",t:"Cipher",mono:1,f:v=>esc(v||"—")},
+    {k:"result",t:"Result",f:v=>v==="ok"?'<span class="sev info">ok</span>':`<span class="sev medium">${esc(v)}</span>`},
+    {k:"notes",t:"Notes",f:v=>`<span class="small">${esc((v||[]).join("; "))}</span>`}], C.sessions);
+  table($("#cx-c",el), [{k:"no",t:"#",num:1,f:pkLink},{k:"cn",t:"Subject CN",mono:1,f:(v,r)=>esc(v||r.subject)},{k:"issuer_cn",t:"Issuer",mono:1},
+    {k:"context",t:"Seen in",f:v=>`<span class="small">${esc(v)}</span>`},{k:"key_alg",t:"Key",f:(v,r)=>esc(v+(r.key_size?"-"+r.key_size:""))+" "+qs(r.key_status)},
+    {k:"sig_alg",t:"Signature",f:(v,r)=>esc(v)+" "+qs(r.sig_status)},{k:"not_after",t:"Not after",f:v=>v?new Date(v*1000).toISOString().slice(0,10):"—"},
+    {k:"issues",t:"Issues",f:v=>v&&v.length?v.map(i=>`<span class="sev ${/^(expired|weak|not yet)/.test(i)?"high":"medium"}">${esc(i)}</span>`).join(" "):'<span class="muted">none</span>'}], C.certificates);
+  let l2 = "";
+  if(C.esp.length) l2 += `<h2>ESP security associations</h2><div id="cx-esp"></div>`;
+  if(C.macsec.length) l2 += `<h2>MACsec secure channels</h2><div id="cx-mac"></div>`;
+  if(C.mka.length) l2 += `<h2>MKA participants</h2><div id="cx-mka"></div>`;
+  $("#cx-l2",el).innerHTML = l2;
+  if(C.esp.length) table($("#cx-esp",el), [{k:"src",t:"Source",mono:1},{k:"dst",t:"Destination",mono:1},{k:"spi",t:"SPI",mono:1},{k:"packets",t:"Packets",num:1},{k:"missing",t:"Missing seq",num:1},{k:"duplicates",t:"Duplicates",num:1},{k:"reordered",t:"Reordered",num:1}], C.esp);
+  if(C.macsec.length) table($("#cx-mac",el), [{k:"sci",t:"SCI",mono:1},{k:"an",t:"AN",num:1},{k:"src",t:"Source MAC",mono:1},{k:"packets",t:"Frames",num:1},{k:"missing_pn",t:"Missing PN",num:1},{k:"replayed_pn",t:"Replayed PN",num:1},{k:"max_pn",t:"Highest PN",num:1,f:v=>v.toLocaleString()},{k:"modes",t:"Protection",f:v=>esc(v.join(", "))}], C.macsec);
+  if(C.mka.length) table($("#cx-mka",el), [{k:"mac",t:"Participant",mono:1},{k:"ckn",t:"CKN",mono:1},{k:"mkpdus",t:"MKPDUs",num:1},{k:"live_peers",t:"Live peers",num:1},{k:"potential_peers",t:"Potential",num:1},{k:"key_server",t:"Key server",f:v=>v?"yes":""},{k:"priority",t:"Priority",num:1},{k:"cipher",t:"SAK cipher",f:v=>esc(v||"—")},{k:"ckn_mismatch",t:"CKN mismatch",f:v=>v?'<span class="sev high">yes</span>':""}], C.mka);
 };
 
 /* ---------- Routing ---------- */

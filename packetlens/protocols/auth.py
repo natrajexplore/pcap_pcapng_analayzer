@@ -4,10 +4,14 @@ from __future__ import annotations
 import ipaddress
 import struct
 
-EAPOL_TYPES = {0: "EAP-Packet", 1: "EAPOL-Start", 2: "EAPOL-Logoff", 3: "EAPOL-Key"}
+from . import macsec
+
+EAPOL_TYPES = {0: "EAP-Packet", 1: "EAPOL-Start", 2: "EAPOL-Logoff", 3: "EAPOL-Key", 5: "EAPOL-MKA",
+               6: "EAPOL-Announcement (generic)", 7: "EAPOL-Announcement (specific)", 8: "EAPOL-Announcement-Req"}
 EAP_CODES = {1: "Request", 2: "Response", 3: "Success", 4: "Failure"}
 EAP_METHODS = {1: "Identity", 2: "Notification", 3: "NAK", 4: "MD5-Challenge", 6: "GTC", 13: "EAP-TLS",
-               21: "EAP-TTLS", 25: "PEAP", 26: "MSCHAPv2", 43: "EAP-FAST"}
+               21: "EAP-TTLS", 25: "PEAP", 26: "MSCHAPv2", 43: "EAP-FAST", 52: "EAP-pwd", 55: "TEAP", 254: "Expanded"}
+TLS_METHODS = {13, 21, 25, 43, 55}
 RADIUS_CODES = {1: "Access-Request", 2: "Access-Accept", 3: "Access-Reject", 4: "Accounting-Request",
                 5: "Accounting-Response", 11: "Access-Challenge", 12: "Status-Server", 40: "Disconnect-Request",
                 41: "Disconnect-ACK", 42: "Disconnect-NAK", 43: "CoA-Request", 44: "CoA-ACK", 45: "CoA-NAK"}
@@ -26,6 +30,11 @@ def parse_eap(buf: bytes) -> dict | None:
             d["identity"] = buf[5:ln].decode("latin-1", "replace")
         elif buf[4] == 3 and ln > 5:
             d["desired"] = [EAP_METHODS.get(x, str(x)) for x in buf[5:ln]]
+        elif buf[4] in TLS_METHODS and ln >= 6 and len(buf) >= 6:
+            fl = buf[5]
+            i = 6 + (4 if fl & 0x80 else 0)
+            d["tls_flags"] = {"length_included": bool(fl & 0x80), "more": bool(fl & 0x40), "start": bool(fl & 0x20)}
+            d["tls_data"] = bytes(buf[i:ln])     # TLS records, possibly one fragment of them
     return d
 
 
@@ -38,10 +47,16 @@ def parse_eapol(buf: bytes) -> dict | None:
         eap = parse_eap(buf[4:4 + ln])
         if eap:
             d["eap"] = eap
+    elif typ == 5:
+        mka = macsec.parse_mka(buf[4:4 + ln])
+        if mka:
+            d["mka"] = mka
     return d
 
 
 def eapol_info(d: dict) -> str:
+    if d.get("mka"):
+        return macsec.mka_info(d["mka"])
     e = d.get("eap")
     if not e:
         return d["type"]
