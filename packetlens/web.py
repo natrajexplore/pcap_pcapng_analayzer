@@ -65,6 +65,8 @@ def make_handler(max_mb: int):
                 return self._send(200, UPLOAD_PAGE.replace("__VERSION__", __version__))
             if self.path == "/health":
                 return self._send(200, "ok", "text/plain")
+            if self.path == "/assets/three.min.js":
+                return self._send(200, html.THREE_JS.read_text(encoding="utf-8"), "text/javascript; charset=utf-8")
             self._send(404, "not found", "text/plain")
 
         def do_POST(self):
@@ -90,7 +92,7 @@ def make_handler(max_mb: int):
                 a = analyze_file(io.BytesIO(raw), keylog_text=keylog or None, name=name)
             except CaptureFormatError as exc:
                 return self._send(400, str(exc), "text/plain")
-            self._send(200, html.render(a.to_dict()))
+            self._send(200, html.render(a.to_dict(), three_src="/assets/three.min.js"))
 
         def log_message(self, fmt, *args):  # quieter default logging
             print(f"[packetlens] {self.address_string()} {fmt % args}")

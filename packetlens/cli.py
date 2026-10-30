@@ -3,6 +3,7 @@
     packetlens analyze capture.pcapng [--html report.html] [--json out.json]
     packetlens demo [--out demo.pcapng] [--html demo.html]
     packetlens serve [--host 127.0.0.1] [--port 8080]
+    packetlens batch pcap_folder/ [--out packetlens-reports]
 """
 from __future__ import annotations
 
@@ -38,6 +39,19 @@ def text_report(a, color: bool = True, verbose: bool = False, width: int = 100) 
     if a.capture_point:
         w(f"  Capture point: {a.capture_point}")
     w("  Protocols: " + ", ".join(f"{k} {v}" for k, v in st["protocols"][:12]))
+    rd = (a.crypto or {}).get("readiness") or {}
+    if rd.get("known"):
+        c = rd["counts"]
+        w(f"  PQC readiness: {rd['score']}/100 · {rd['quantum_safe']} quantum-safe, {c.get('draft', 0)} draft, "
+          f"{c.get('classical', 0)} classical, {c.get('weak', 0)} weak key exchange(s) · "
+          + ", ".join(f"{p} {sum(v.values())}" for p, v in rd["by_protocol"].items()))
+    if (a.ai or {}).get("providers"):
+        w("  AI services: " + ", ".join(f"{p['provider']} ({len(p['clients'])} client{'s' if len(p['clients']) != 1 else ''})"
+                                         for p in a.ai["providers"][:8]))
+    fb = a.fabric or {}
+    if fb.get("qps") or fb.get("pfc"):
+        w(f"  AI fabric: {len(fb['qps'])} RoCEv2 queue pair(s), {sum(q['gaps'] for q in fb['qps'])} missing PSN(s), "
+          f"{sum(q['cnps'] for q in fb['qps'])} CNP(s), {sum(s['frames'] for s in fb['pfc'])} PFC/PAUSE frame(s)")
     for warn in a.warnings:
         w(_c(f"  ! {warn}", COL["medium"], color))
     w()
@@ -142,8 +156,33 @@ def main(argv=None) -> int:
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8080)
     sv.add_argument("--max-mb", type=int, default=200)
+    bt = sub.add_parser("batch", help="analyze every capture under a folder and build an index of 3D reports")
+    bt.add_argument("folder")
+    bt.add_argument("--out", default="packetlens-reports", help="output folder (default: packetlens-reports)")
+    bt.add_argument("--max-packets", type=int, default=None)
+    ap_ = sub.add_parser("app", help="run PacketLens Studio: library, 3D replay, packet simulator and live capture")
+    ap_.add_argument("folder", nargs="?", help="capture library folder (optional)")
+    ap_.add_argument("--port", type=int, default=8090)
+    ap_.add_argument("--no-browser", action="store_true", help="do not open a browser window")
     args = ap.parse_args(argv)
 
+    if args.cmd == "app":
+        from .app.server import serve as serve_app
+        if args.folder and not os.path.isdir(args.folder):
+            print(f"error: {args.folder} is not a folder", file=sys.stderr)
+            return 1
+        serve_app(args.folder, port=args.port, open_browser=not args.no_browser)
+        return 0
+    if args.cmd == "batch":
+        from .batch import run as run_batch
+        if not os.path.isdir(args.folder):
+            print(f"error: {args.folder} is not a folder", file=sys.stderr)
+            return 1
+        print(f"Analyzing captures under {args.folder} …")
+        res = run_batch(args.folder, args.out, args.max_packets)
+        print(f"\n{res['captures']} captures analyzed ({res['errors']} errors, {res['skipped_pkt']} .pkt files skipped).")
+        print(f"Open: {res['index']}")
+        return 1 if res["errors"] else 0
     if args.cmd == "serve":
         from .web import serve
         serve(args.host, args.port, args.max_mb)

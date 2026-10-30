@@ -16,14 +16,15 @@ as they are consumed (low memory use on large captures).
 from __future__ import annotations
 
 import re
+from collections import deque
 
-from .protocols import bgp, dns, http, http2, tls
+from .protocols import bgp, dns, http, http2, ssh, tls, x509
 from .tlsdecrypt import TLSSession
 
 M32 = 0xFFFFFFFF
 MAX_HEADER = 64 * 1024
 MAX_OOO = 64
-APP_KEYS = ("http", "tls", "bgp", "dns", "http2")
+APP_KEYS = ("http", "tls", "bgp", "dns", "http2", "ssh")
 _CL = re.compile(rb"\r\ncontent-length:\s*(\d+)", re.I)
 _TE = re.compile(rb"\r\ntransfer-encoding:[^\r\n]*chunked", re.I)
 _STATUS = re.compile(rb"^HTTP/\d\.\d (\d{3})")
@@ -41,6 +42,8 @@ class Framer:
         self.preface_done = False
         self.desync = False
         self.h2dec = None
+        self.peer = None             # Framer of the opposite direction (pairs HTTP responses with requests)
+        self.methods = deque(maxlen=64)   # request methods still awaiting a response
 
     # ------------------------------------------------------------------ io --
     def feed(self, data: bytes, pkt) -> list:
@@ -73,6 +76,8 @@ class Framer:
             return "http"
         if tls.looks_like_tls(d):
             return "tls"
+        if d.startswith(b"SSH-"):
+            return "ssh"
         if 53 in self.ports and len(d) >= 14:
             return "dns"
         return None
@@ -115,8 +120,18 @@ class Framer:
                         msg, s, e))
             if self.proto == "h2" and msg.startswith(b"PRI"):
                 self.preface_done = True
+            elif self.proto == "ssh":
+                if not self.preface_done:
+                    self.preface_done = msg.startswith(b"SSH-")
+                elif len(msg) > 5 and msg[5] == 21:   # NEWKEYS: everything after is encrypted
+                    self.proto = "raw"
+                    self.buf.clear()
+                    self.marks.clear()
+                    break
             if self.proto == "http":
                 self._after_http_header(msg)
+                if self.body is not None and self.buf:   # keep a body preview before the body is consumed below
+                    out[-1] = ("http", msg + bytes(self.buf[:200]), s, e)
         return out
 
     def _msg_len(self) -> int | None:
@@ -135,6 +150,18 @@ class Framer:
                 return -1
             n = int.from_bytes(b[16:18], "big")
             if n < 19:
+                return -1
+            return n if len(b) >= n else None
+        if self.proto == "ssh":
+            if not self.preface_done:                # identification line, then binary packets
+                i = b.find(b"\n", 0, 512)
+                if i < 0:
+                    return -1 if len(b) > 512 else None
+                return i + 1
+            if len(b) < 6:
+                return None
+            n = 4 + int.from_bytes(b[:4], "big")
+            if not 16 <= n <= 70000:
                 return -1
             return n if len(b) >= n else None
         if self.proto == "dns":
@@ -160,8 +187,14 @@ class Framer:
 
     def _after_http_header(self, hdr: bytes) -> None:
         m = _STATUS.match(hdr)
-        if m and (m.group(1).startswith(b"1") or m.group(1) in (b"204", b"304")):
+        if m is None:                              # request: the peer needs its method to frame the response
+            self.methods.append(hdr.split(b" ", 1)[0])
+        elif m.group(1).startswith(b"1"):          # interim response: the request is still pending
             return
+        else:
+            req = self.peer.methods.popleft() if self.peer is not None and self.peer.methods else None
+            if req == b"HEAD" or m.group(1) in (b"204", b"304"):   # Content-Length here describes no body
+                return
         if _TE.search(hdr):
             self.body = "chunked"
             return
@@ -229,6 +262,9 @@ class Reassembler:
         d = self.dirs.get(key)
         if d is None:
             d = self.dirs[key] = _Dir((p.sport, p.dport))
+            other = self.dirs.get((t.stream, not from_client))
+            if other is not None:
+                d.framer.peer, other.framer.peer = other.framer, d.framer
         if t.syn:
             d.next_seq = (t.seq + 1) & M32
             return
@@ -302,6 +338,12 @@ class Reassembler:
                 for inner, body in sess.record(msg[0], int.from_bytes(msg[1:3], "big"), msg[5:], from_client):
                     self.stats["decrypted_records"] += 1
                     self._decrypted(inner, body, end, from_client, sid, d, sess)
+        elif kind == "ssh":
+            m = ssh.parse(msg)
+            if m:
+                cur = end.layers.setdefault("ssh", {"messages": []})
+                cur["messages"].append(m)
+                _label(end, "SSH", ssh.info(cur))
         elif kind == "bgp":
             m = bgp.parse(msg)
             if m:
@@ -315,7 +357,7 @@ class Reassembler:
                 _label(end, "DNS", dns.info(m))
         elif kind == "http":
             hdr_pkt = end
-            m = http.parse(msg + bytes(d.framer.buf[:200]) if d.framer.body else msg)
+            m = http.parse(msg + bytes(d.framer.buf[:200]) if d.framer.body and msg.endswith(b"\r\n\r\n") else msg)
             if m:
                 hdr_pkt.layers["http"] = m
                 _label(hdr_pkt, "HTTP", http.info(m))
@@ -324,6 +366,9 @@ class Reassembler:
 
     def _decrypted(self, inner, body, pkt, from_client, sid, d, sess):
         pkt.tags.append("decrypted") if "decrypted" not in pkt.tags else None
+        if inner == 22:                            # TLS 1.3 encrypted handshake: Certificate carries the chain
+            _tls13_certificates(pkt, body)
+            return
         if inner == 21 and len(body) >= 2:
             cur = pkt.layers.setdefault("tls", {"records": [], "handshakes": []})
             cur["alert"] = {"level": "fatal" if body[0] == 2 else "warning",
@@ -335,9 +380,12 @@ class Reassembler:
         if d.plain is None:
             proto = "h2" if sess.alpn == "h2" else None
             d.plain = Framer((), proto)
+            other = self.dirs.get((sid, not from_client))
+            if other is not None and other.plain is not None:
+                d.plain.peer, other.plain.peer = other.plain, d.plain
         for kind, msg, start, end in d.plain.feed(body, pkt):
             if kind == "http":
-                m = http.parse(msg + bytes(d.plain.buf[:200]) if d.plain.body else msg)
+                m = http.parse(msg + bytes(d.plain.buf[:200]) if d.plain.body and msg.endswith(b"\r\n\r\n") else msg)
                 if m:
                     m["tls"] = True
                     if m.get("url", "").startswith("http://"):
@@ -373,6 +421,22 @@ def _reset_app(p) -> None:
         p.info = f"{p.sport} → {p.dport} [{t.flag_str()}] Seq={t.seq} Ack={t.ack} Win={t.window} Len={t.payload_len}"
 
 
+def _tls13_certificates(p, body: bytes) -> None:
+    off = 0
+    while off + 4 <= len(body):
+        htype, hlen = body[off], int.from_bytes(body[off + 1:off + 4], "big")
+        if htype == 11 and off + 4 + hlen <= len(body):
+            try:
+                chain = x509.parse_chain(body[off + 4:off + 4 + hlen], tls13=True)
+            except (ValueError, IndexError):
+                chain = []
+            if chain:
+                cur = p.layers.setdefault("tls", {"records": [], "handshakes": []})
+                cur["certificates"] = chain
+                cur["certificates_decrypted"] = True
+        off += 4 + hlen
+
+
 def _label(p, proto: str, info: str) -> None:
     p.protocol = proto
     p.info = info
@@ -385,7 +449,7 @@ def _merge_tls(p, rec: dict) -> None:
     else:
         cur["records"] += rec["records"]
         cur["handshakes"] += rec["handshakes"]
-        for k in ("client_hello", "server_hello", "alert"):
+        for k in ("client_hello", "server_hello", "alert", "certificates"):
             if k in rec:
                 cur[k] = rec[k]
     if "http" not in p.layers and "http2" not in p.layers:   # decrypted application layer wins the label

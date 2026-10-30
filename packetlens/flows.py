@@ -348,6 +348,7 @@ class FlowTracker:
         elif t.syn:
             d.last_win, d.last_win_raw = t.window, t.window
         d.packets += 1
+        d.last_ts = p.ts
         d.bytes += p.wirelen
         d.payload_bytes += t.payload_len
         d.last_was_keepalive = keepalive
@@ -369,16 +370,17 @@ class FlowTracker:
                 kind = "early"
             st.rst = {"no": p.no, "from": who, "kind": kind, "ts": p.ts}
 
-        # ---- application response time & idle-gap attribution
+        # ---- idle-gap attribution (before the response tracking below clears the pending request)
+        if t.time_delta > self.GAP_THRESHOLD and st.c.packets + st.s.packets > 1:
+            st.gaps.append({"no": p.no, "seconds": round(t.time_delta, 3),
+                            "cause": self._gap_cause(t, flags, from_client, st)})
+        # ---- application response time
         if t.payload_len and "retransmission" not in flags and "keep_alive" not in flags:
             if from_client:
                 st._awaiting_response_from, st._last_req_ts, st._last_req_no = 1, p.ts, p.no
             elif st._awaiting_response_from == 1:
                 st.response_times.append((st._last_req_no, p.no, p.ts - st._last_req_ts))
                 st._awaiting_response_from = None
-        if t.time_delta > self.GAP_THRESHOLD and st.c.packets + st.s.packets > 1:
-            st.gaps.append({"no": p.no, "seconds": round(t.time_delta, 3),
-                            "cause": self._gap_cause(t, flags, from_client, st)})
 
         # ---- record
         t.analysis = flags

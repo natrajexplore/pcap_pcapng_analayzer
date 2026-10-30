@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketLens Studio</title>
+<script>/* apply the saved (or system) theme before first paint */
+try{ const t = JSON.parse(localStorage.getItem("pl-theme")); document.documentElement.dataset.theme = t || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"); }
+catch(e){ document.documentElement.dataset.theme = "dark"; }</script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<a class="skip" href="#view">Skip to content</a>
+<header class="top">
+  <a class="brand" href="#/library"><span class="logo" aria-hidden="true"></span>PacketLens <b>Studio</b></a>
+  <nav class="views" aria-label="Views">
+    <a href="#/library" data-view="library">Library</a>
+    <a href="#/analyze" data-view="analyze">Analyze</a>
+    <a href="#/insights" data-view="insights">Insights</a>
+    <a href="#/sim" data-view="sim">Simulator</a>
+    <a href="#/live" data-view="live">Live</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="top-actions">
+    <button class="icon-btn" id="btn-pal" title="Command palette (Ctrl+K)" aria-label="Open command palette"><span aria-hidden="true">⌕</span><span class="lbl-txt">Search</span> <kbd>Ctrl K</kbd></button>
+    <button class="icon-btn" id="btn-theme" aria-label="Switch colour theme" title="Switch theme (T)"><span aria-hidden="true" id="theme-ic">◐</span></button>
+    <label class="upload btn ghost" title="Analyze a capture file">Open capture…<input type="file" id="upload" accept=".pcap,.pcapng,.cap" hidden></label>
+  </div>
+</header>
+<main id="view" tabindex="-1"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<div class="drop-overlay" id="drop-ov" aria-hidden="true"><div>Drop a .pcap / .pcapng file to analyze it</div></div>
+<div class="pal" id="pal" hidden role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="pal-box"><input id="pal-q" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Type a command, view, capture or filter…">
+    <div class="pal-list" id="pal-list" role="listbox"></div>
+    <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> close</span><span><kbd>?</kbd> all shortcuts</span></div></div>
+</div>
+<script src="/static/three.min.js"></script>
+<script src="/static/scene.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/analyze.js"></script>
+<script src="/static/insights.js"></script>
+</body>
+</html>

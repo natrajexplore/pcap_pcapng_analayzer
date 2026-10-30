@@ -187,7 +187,9 @@ class ReportTests(unittest.TestCase):
         m = re.search(r'<script id="pl-data" type="application/json">(.*?)</script>', out, re.S)
         data = json.loads(m.group(1))
         self.assertEqual(data["stats"]["packets"], len(A.packets))
-        self.assertNotRegex(out, r"<script[^>]+src=|<link[^>]+href=")   # no external assets
+        # no external assets: the only script source is the bundled three.min.js placed next to the report
+        self.assertEqual(re.findall(r'<script[^>]+src="([^"]*)"', out), ["three.min.js"])
+        self.assertNotRegex(out, r"<link[^>]+href=")
 
     def test_to_dict_is_json_serialisable(self):
         json.dumps(A.to_dict())

@@ -58,7 +58,7 @@ def correlate(ctx) -> list[RootCause]:
     out: list[RootCause] = []
     for rule in (_firewall_block, _middlebox_reset, _pmtud, _routing_impact, _bgp_transport, _ospf_adjacency,
                  _eigrp_adjacency, _isis_adjacency, _fhrp, _dns_impact, _dhcp_chain, _rogue_dhcp, _arp_mitm, _receiver_bottleneck,
-                 _loss_vs_server, _stp_l2, _attack_chain, _capture_quality):
+                 _loss_vs_server, _stp_l2, _attack_chain, _capture_quality, _crypto, _fabric, _quic_fallback):
         try:
             out.extend(rule(ctx) or [])
         except Exception as exc:  # a broken rule must never break the report
@@ -600,4 +600,151 @@ def _fhrp(ctx):
             {"routing": "Both routers advertise the connected subnet as active.", "network": "Check the VLAN between the routers.",
              "client": "Gateway MAC flaps in ARP caches.", "security": "Rule out a rogue router with higher priority."},
             f.remediation + [x.remediation[0] for x in related], f.recommendations, "routing"))
+    return res
+
+
+def _crypto(ctx):
+    """PQC ClientHello killed by a middlebox, inconsistent PQC behind one name, IKE PQC mismatches, MKA CKN mismatch."""
+    res = []
+    sessions = (ctx.crypto or {}).get("sessions", [])
+    blocked_f = _by(ctx, "pqc_clienthello_blocked")
+    for s in [x for x in sessions if x.get("blocked_evidence")][:5]:
+        st = ctx.flows.streams[s["stream"]]
+        ev = s["blocked_evidence"]
+        pk = [p for p in ctx.packets if p.tcp is not None and p.tcp.stream == st.id]
+        server_ttls = {p.ttl for p in pk if p.src == st.server and not p.tcp.rst and p.ttl is not None}
+        rsts = [p for p in pk if p.tcp.rst and p.src == st.server]
+        forged = bool(rsts and server_ttls and all(abs(rsts[0].ttl - t) >= 3 for t in server_ttls))
+        ok_elsewhere = [x for x in sessions if x["proto"] == "TLS" and x["client"] == s["client"] and x["kex_status"] in ("hybrid", "pqc")]
+        conf = 0.7 + 0.15 * forged + 0.1 * bool(ok_elsewhere)
+        retx = [no for no, flag, _ in st.events if flag in ("retransmission", "fast_retransmission")][:4]
+        chain = [step(ctx, st.first_no, "Transport", f"TCP {st.client}:{st.cport} → {st.server}:{st.sport} established"),
+                 step(ctx, s["no"], "Security", f"ClientHello ({ev['ch_len']} bytes with an ML-KEM key share) needs "
+                                                f"{(ev['ch_len'] or 0) // 1448 + 1} TCP segments")]
+        chain += [step(ctx, n, "Transport", "ClientHello segment retransmitted (never acknowledged)") for n in retx]
+        if rsts:
+            chain.append(step(ctx, rsts[0].no, "Transport", f"RST 'from' {st.server}" +
+                              (f" with TTL {rsts[0].ttl} (server packets: {sorted(server_ttls)})" if forged else "")))
+        res.append(RootCause(
+            "pqc_middlebox", f"Post-quantum ClientHello to {s['name']} blocked in the path", "high", round(min(conf, 0.95), 2),
+            f"A device between {s['client']} and {s['server']} cannot handle the large post-quantum ClientHello, so the TLS "
+            "connection never gets a ServerHello.",
+            "Hybrid ML-KEM key shares add about 1.2 KB to the ClientHello, which then spans two TCP segments. Legacy firewalls, IPS and "
+            "SNI filters that expect the ClientHello in a single segment drop the second one or reset the connection. "
+            + ("The RST arrived with a TTL that does not match the server's packets, so a middlebox forged it. " if forged else "")
+            + (f"The same client negotiated PQC successfully with {ok_elsewhere[0]['name']}, so the client is fine. " if ok_elsewhere else ""),
+            chain, [f.uid for f in blocked_f + _by(ctx, "tls_handshake_failure")], [s["client"], s["server"]],
+            {"client": "Works with ML-KEM disabled in the browser/OS, fails with it on.",
+             "server": f"{s['server']} probably never saw the complete ClientHello.",
+             "network": "Find the inspection device on this path; capture on both sides of it to confirm.",
+             "security": "The fix is to upgrade the middlebox, not to disable PQC fleet-wide."},
+            ["Upgrade/patch the inspecting firewall/IPS/proxy for split ClientHello support",
+             "Temporarily bypass inspection for this destination to confirm"],
+            ["Validate PQC through every inspection device before browser and OS rollouts reach users"], "network"))
+    by_name: dict = defaultdict(set)
+    for s in sessions:
+        if s["proto"] == "TLS" and s["kex_status"] != "unknown" and s["offered_status"] in ("hybrid", "pqc"):
+            by_name[s["name"]].add(s["kex_status"] in ("hybrid", "pqc"))
+    for name, outcomes in by_name.items():
+        if outcomes == {True, False}:
+            res.append(RootCause(
+                "pqc_inconsistent", f"Inconsistent post-quantum support behind {name}", "medium", 0.7,
+                f"Some connections to {name} negotiate ML-KEM and others fall back to classical key exchange.",
+                "The same kind of client gets different answers, so the difference is on the server side: a mixed backend pool "
+                "(some nodes upgraded) or a TLS-inspecting proxy on some paths.",
+                [step(ctx, s["no"], "Security", f"{s['client']} → {s['kex']}") for s in sessions if s["name"] == name][:6],
+                [f.uid for f in _by(ctx, "pqc_offered_not_selected")], [name],
+                {"server": "Compare TLS library versions and group settings across the pool.",
+                 "network": "Check whether only some paths traverse a TLS inspection device."},
+                ["Align TLS configuration across every backend"], ["Monitor the PQC negotiation rate per backend"], "server"))
+    fail = _by(ctx, "ike_negotiation_failure")
+    for s in [x for x in sessions if x["proto"] == "IKEv2" and "NO_PROPOSAL_CHOSEN" in x["result"] and x["offered_status"] == "pqc"][:3]:
+        res.append(RootCause(
+            "ike_pqc_mismatch", f"IKE peer {s['server']} rejects the post-quantum proposal", "high", 0.8,
+            f"{s['client']} only proposes IKE SAs with an additional ML-KEM key exchange (RFC 9370) and {s['server']} accepts none of them.",
+            "IKE_SA_INIT carried ADDKE transforms (ML-KEM) and the responder answered NO_PROPOSAL_CHOSEN: either the responder "
+            "does not implement RFC 9370 / ML-KEM, or its policy lists different groups. With ADDKE mandatory there is no fallback.",
+            [step(ctx, n, "Security", t) for n, t in zip(s["packets"][1:3], ("IKE_SA_INIT with ML-KEM ADDKE proposal", "NO_PROPOSAL_CHOSEN"))],
+            [f.uid for f in fail], [s["client"], s["server"]],
+            {"security": "Upgrade the responder, or make the ADDKE optional (add a NONE transform) during migration.",
+             "network": "The tunnel stays down until both peers agree."},
+            ["Make the ML-KEM additional key exchange optional while peers upgrade", "Check responder support for RFC 9370"],
+            ["Keep a VPN peer capability inventory for the PQC migration"], "security"))
+    for s in [x for x in sessions if x["proto"] == "IKEv2" and x["result"].startswith("no response to IKE_INTERMEDIATE")][:3]:
+        res.append(RootCause(
+            "ike_pqc_fragment_loss", f"Post-quantum IKE_INTERMEDIATE to {s['server']} lost in the path", "high", 0.75,
+            "IKE_SA_INIT succeeded, but the large IKE_INTERMEDIATE message carrying the ML-KEM key share never gets an answer.",
+            "IKE_INTERMEDIATE is the first message that carries the ~1.2 KB ML-KEM share. Without IKEv2 fragmentation "
+            f"(supported by: {', '.join(s['frag_supported']) or 'neither peer'}) it is IP-fragmented, and firewalls/NAT commonly drop UDP fragments.",
+            [step(ctx, s["packets"][1], "Security", "IKE_SA_INIT exchange completed (ML-KEM ADDKE selected)")] +
+            [step(ctx, n, "Security", "IKE_INTERMEDIATE retransmitted") for n in s["packets"][3:6]],
+            [f.uid for f in _by(ctx, "ike_no_response") + _by(ctx, "ike_pqc_fragmentation")], [s["client"], s["server"]],
+            {"network": "Look for dropped IP fragments of UDP 500/4500 on the path.",
+             "security": "Enable RFC 7383 fragmentation on the responder."},
+            ["Enable IKEv2 fragmentation on both peers", "Permit UDP 500/4500 fragments on the path"],
+            ["Test PQC IKE with full-size messages through every firewall"], "network"))
+    mism = [m for m in (ctx.mka or []) if m["ckn_mismatch"]]
+    for f in _by(ctx, "mka_no_live_peer")[:1]:
+        if mism:
+            res.append(RootCause(
+                "mka_ckn_mismatch", "MACsec session cannot form: CAK name (CKN) mismatch", "high", 0.8,
+                f"{', '.join(m['mac'] for m in mism[:3])} use a CKN no other participant uses, so they never become live peers.",
+                "MKA participants only accept MKPDUs for the same CAK name; with different CKNs each side ignores the other, no SAK is "
+                "distributed and the link stays unprotected (should-secure) or down (must-secure).",
+                [step(ctx, n, "Security", "MKPDU with no live peers") for n in f.packets[:3]], [f.uid], f.entities,
+                {"security": "Configure the same key chain (CKN/CAK) on both ends.", "network": "Check the port's MACsec policy."},
+                ["Align the MKA key chain on both ends"], ["Automate key-chain distribution and rollover"], "security"))
+    return res
+
+
+def _fabric(ctx):
+    """GPU fabric: pause storm + RoCE loss/congestion = lossless class congested; RoCE loss with no PFC/ECN = lossy RoCE."""
+    res = []
+    storm, loss, cong, not_ect = (_by(ctx, x) for x in ("pfc_storm", "roce_packet_loss", "roce_congestion", "roce_not_ect"))
+    if storm and (loss or cong):
+        f = storm[0]
+        res.append(RootCause(
+            "fabric_congestion_spreading", "Congestion spreading in the RDMA fabric (PFC pause storm)", "critical", 0.8,
+            "A port keeps pausing the lossless RoCE priority, so RDMA traffic behind it stalls and the congestion spreads upstream.",
+            f.summary + ". At the same time RoCE flows show " + " and ".join(
+                x for x in ("loss / retransmissions" if loss else "", "congestion notifications" if cong else "") if x)
+            + ". PFC stops the upstream link for that priority entirely, so every flow sharing it (not only the congested one) waits: "
+              "head-of-line blocking that slows every rank of the collective operation.",
+            [step(ctx, n, "Link", "PFC pause") for n in f.packets[:3]] +
+            [step(ctx, x.packets[0] if x.packets else None, "Transport", x.title) for x in (loss + cong)[:3]],
+            [x.uid for x in storm + loss + cong], f.entities,
+            {"network": "Find the port sending the pauses; check whether it is a slow receiver (NIC) or a congested switch egress.",
+             "server": "A hung or slow NIC/driver on the pausing host is a classic trigger.",
+             "application": "Training throughput drops for the whole job, not just one flow."},
+            ["Enable the PFC watchdog on switches", "Fix the slow receiver or rebalance the congested links"],
+            ["Make ECN/DCQCN the primary congestion control and keep PFC as a backstop"], "network"))
+    if loss and not storm and not _by(ctx, "pfc_active") and (not_ect or not cong):
+        f = loss[0]
+        res.append(RootCause(
+            "roce_lossy_fabric", "RoCEv2 running over a lossy fabric (no PFC, no ECN feedback)", "high", 0.7,
+            "RoCE packets are being lost and neither PFC pauses nor ECN congestion feedback are visible, so the fabric is not lossless for RDMA.",
+            f.summary + ". RoCEv2 RC recovers with go-back-N, so even 0.1% loss costs a large share of throughput. "
+            + ("The RoCE packets are not even ECN-capable, so DCQCN cannot react. " if not_ect else ""),
+            [step(ctx, n, "Transport", "RoCE PSN gap / NAK") for n in f.packets[:4]], [x.uid for x in loss + not_ect], f.entities,
+            {"network": "Apply the RoCE QoS profile on every hop: DSCP trust, PFC on the RoCE priority, ECN marking thresholds.",
+             "server": "Enable ECN/DCQCN on the NICs."},
+            ["Configure PFC + ECN for the RoCE class end to end", "Check link error counters on the lossy path"],
+            ["Validate the fabric with an RDMA perftest before running jobs"], "network"))
+    return res
+
+
+def _quic_fallback(ctx):
+    res = []
+    for f in _by(ctx, "quic_blocked"):
+        if "fell back to TCP" not in f.summary:
+            continue
+        res.append(RootCause(
+            "quic_fallback", "UDP/443 blocked: clients fall back from QUIC to TCP", "low", 0.8,
+            "Clients try HTTP/3 over QUIC, get no answer and retry the same servers over TCP/TLS.",
+            f.summary + ". Every first connection pays the QUIC timeout before falling back; HTTP/3 benefits (0-RTT, no head-of-line "
+            "blocking, connection migration) are lost. Usually a firewall policy forcing traffic through TLS inspection.",
+            [step(ctx, n, "Transport", "QUIC Initial without answer") for n in f.packets[:3]], [f.uid], f.entities,
+            {"network": "Allow UDP/443, or reject it actively (ICMP unreachable) so clients fall back at once.",
+             "client": "Browsers remember the failure for a while, so later loads use TCP directly."},
+            ["Decide the QUIC policy and implement it cleanly"], ["Monitor UDP/443 drops at the perimeter"], "network"))
     return res

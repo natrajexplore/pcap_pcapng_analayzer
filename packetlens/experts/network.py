@@ -85,6 +85,8 @@ def run(ctx) -> None:
         elif (not v6 and t == 3 and c == 4) or (v6 and t == 2):
             fragneed.append(p)
         elif (not v6 and t == 3) or (v6 and t == 1):
+            if d.get("code_name") == "Port unreachable" and 33434 <= ((d.get("original") or {}).get("dport") or 0) <= 33534:
+                continue                      # the destination answering a traceroute probe: expected end of the trace
             unreach[d.get("code_name", f"code {c}")].append(p)
         elif (not v6 and t == 11) or (v6 and t == 3):
             ttlx.append(p)
@@ -123,7 +125,12 @@ def run(ctx) -> None:
     if ttlx:
         dsts = Counter((p.layers["icmp"].get("original") or {}).get("dst") for p in ttlx)
         reporters = sorted({p.src for p in ttlx})
-        loop = [d for d, n in dsts.items() if n >= 3 and d]
+        # traceroute: the destination itself finally answers (port unreachable / echo reply), or each hop
+        # answers only a few probes; a loop keeps the same routers expiring the same destination's packets
+        answered = {p.src for p in icmp if p.layers["icmp"]["type"] in (0, 129) or p.layers["icmp"].get("code_name") == "Port unreachable"}
+        per_hop = Counter(((p.layers["icmp"].get("original") or {}).get("dst"), p.src) for p in ttlx)
+        loop = [d for d, n in dsts.items() if n >= 3 and d and d not in answered
+                and max(c for (dd, _), c in per_hop.items() if dd == d) > 3]
         sev = "high" if loop else "low"
         F.append(make("icmp_ttl_exceeded",
                       f"{len(ttlx)} TTL-exceeded messages from {len(reporters)} router(s) ({', '.join(reporters[:6])}). "
@@ -189,10 +196,17 @@ def run(ctx) -> None:
     # ------------------------------------------------------------ STP -------
     tcs = [p for p in pk if p.layers.get("stp", {}).get("tc")]
     if tcs:
-        roots = sorted({p.layers["stp"].get("root") for p in pk if "stp" in p.layers} - {None})
+        # PVST+ runs one tree per VLAN, so different roots are only a conflict within the same VLAN
+        by_vlan = defaultdict(set)
+        for p in pk:
+            if p.layers.get("stp", {}).get("root"):
+                by_vlan[p.layers["stp"].get("vlan") or p.vlan].add(p.layers["stp"]["root"])
+        conflicts = {v: sorted(r) for v, r in by_vlan.items() if len(r) > 1}
+        roots = [r for rs in conflicts.values() for r in rs]
         F.append(make("stp_topology_change",
                       f"{len(tcs)} BPDUs with Topology Change flag/TCN from {', '.join(sorted({p.eth_src for p in tcs})[:5])}."
-                      + (f" Multiple root bridges advertised: {', '.join(roots)}." if len(roots) > 1 else ""),
+                      + "".join(f" VLAN {v if v is not None else 'untagged'}: multiple root bridges advertised "
+                                f"({', '.join(r)})." for v, r in list(conflicts.items())[:3]),
                       packets=[p.no for p in tcs[:20]], ts=tcs[0].ts, count=len(tcs),
                       severity="high" if len(roots) > 1 or len(tcs) > 10 else "medium"))
 
@@ -212,6 +226,33 @@ def run(ctx) -> None:
     if apipa:
         F.append(make("dhcp_apipa", f"Hosts using link-local addresses: {', '.join(apipa[:10])}.",
                       entities=apipa, ts=next(p.ts for p in pk if p.src in apipa)))
+
+    # ------------------------------------------------------------ QoS -------
+    marked = defaultdict(Counter)
+    for p in pk:
+        if p.ip_version and p.dscp:
+            marked[p.dscp][p.protocol] += 1
+    if marked:
+        F.append(make("qos_dscp_summary", "DSCP markings: " + "; ".join(
+            f"{dscp_name(d)} ({d}): {', '.join(f'{k} {v}' for k, v in c.most_common(4))}"
+            for d, c in sorted(marked.items(), key=lambda x: -sum(x[1].values()))) + ".",
+            details={dscp_name(d): dict(c) for d, c in marked.items()}))
+    ef_tcp = [p for p in pk if p.dscp == 46 and p.tcp is not None]
+    if ef_tcp:
+        F.append(make("qos_ef_misuse", f"{len(ef_tcp)} TCP packet(s) marked EF (DSCP 46) — "
+                                       f"{', '.join(sorted({p.protocol for p in ef_tcp}))} "
+                                       f"({', '.join(sorted({f'{p.src}→{p.dst}:{p.dport}' for p in ef_tcp})[:3])}). "
+                                       "EF is the strict-priority class reserved for real-time voice.",
+                      packets=[p.no for p in ef_tcp[:10]], ts=ef_tcp[0].ts, count=len(ef_tcp)))
+
+
+DSCP_NAMES = {0: "BE", 8: "CS1", 10: "AF11", 12: "AF12", 14: "AF13", 16: "CS2", 18: "AF21", 20: "AF22", 22: "AF23",
+              24: "CS3", 26: "AF31", 28: "AF32", 30: "AF33", 32: "CS4", 34: "AF41", 36: "AF42", 38: "AF43",
+              40: "CS5", 44: "VOICE-ADMIT", 46: "EF", 48: "CS6", 56: "CS7"}
+
+
+def dscp_name(d: int) -> str:
+    return DSCP_NAMES.get(d, f"DSCP {d}")
 
 
 def _icmp_event(p) -> dict:
