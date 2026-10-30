@@ -27,7 +27,7 @@ packetlens analyze https.pcapng --keylog sslkeys.log   # decrypt TLS 1.2 / 1.3
 packetlens compare client-side.pcapng server-side.pcapng   # locate loss between two capture points
 sudo packetlens live -i eth0 -d 30 --html live.html    # capture + analyze (Linux)
 packetlens serve                                   # http://127.0.0.1:8080, drop a capture in the browser
-packetlens app pcap_folder/                        # Studio: library, 3D replay, packet simulator, live capture
+packetlens app pcap_folder/                        # Studio: library, 3D replay, Insights (PQC / AI / fabric), simulator, live
 packetlens batch pcap_folder/ --out reports/       # one 3D report per capture + index.html
 ```
 

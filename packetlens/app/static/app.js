@@ -20,32 +20,127 @@ function ring(h){ const r = 20, c = 2*Math.PI*r, k = Math.max(0, Math.min(100, h
     ${h==null?"":`<circle cx="24" cy="24" r="${r}" fill="none" stroke="${healthColor(h)}" stroke-width="4" stroke-linecap="round" stroke-dasharray="${c*k} ${c}" transform="rotate(-90 24 24)" style="filter:drop-shadow(0 0 4px ${healthColor(h)})"/>`}
     <text x="24" y="28" text-anchor="middle">${h==null?"…":h}</text></svg>`; }
 
+const fmtB = n => n==null ? "—" : n >= 1e9 ? (n/1e9).toFixed(2)+" GB" : n >= 1e6 ? (n/1e6).toFixed(2)+" MB" : n >= 1e3 ? (n/1e3).toFixed(1)+" kB" : n+" B";
+const store = (k, v) => { try{ if(v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); }catch(e){ return null; } };
+
+/* skeleton placeholders and empty / error states */
+function skeleton(kind="page"){
+  const lines = n => Array.from({length:n}, (_,i)=>`<div class="sk sk-line" style="width:${92 - i*9 % 40}%"></div>`).join("");
+  if(kind === "library") return `<div class="sk sk-title"></div><div class="libgrid">${Array.from({length:6},()=>`<div class="panel">${lines(5)}</div>`).join("")}</div>`;
+  return `<div class="sk sk-title"></div><div class="sk-grid">${Array.from({length:5},()=>'<div class="sk sk-tile"></div>').join("")}</div>
+    <div class="studio"><div class="sk sk-block"></div><div class="panel">${lines(7)}</div></div>`;
+}
+function state({icon="◌", title, msg="", tone="var(--cyan)", actions=[]}){
+  return `<div class="panel state" style="--c:${tone}" role="${tone==="var(--red)"?"alert":"status"}"><div class="ic" aria-hidden="true">${icon}</div><h2>${esc(title)}</h2>
+    ${msg?`<p>${esc(msg)}</p>`:""}<div class="row">${actions.map((a,i)=>a.href?`<a class="btn ${i?"ghost":""}" href="${esc(a.href)}">${esc(a.label)}</a>`
+      :`<button class="${i?"ghost":""}" data-act="${i}">${esc(a.label)}</button>`).join("")}</div></div>`;
+}
+function showState(el, opts){ el.innerHTML = state(opts); (opts.actions||[]).forEach((a,i)=>{ const b = el.querySelector(`[data-act="${i}"]`); if(b) b.onclick = a.onclick; }); }
+const errorState = (el, e) => showState(el, {icon:"⚠", tone:"var(--red)", title:"Something went wrong", msg:e.message||String(e),
+  actions:[{label:"Retry", onclick:()=>route()}, {label:"Back to library", href:"#/library"}]});
+
+/* hand a packet number / display filter to the Analyze view */
+let handoff = null;
+function openPackets(id, opts={}){ handoff = {id, ...opts}; const h = "#/analyze/"+encodeURIComponent(id); if(location.hash === h) route(); else location.hash = h; }
+function takeHandoff(id){ const h = handoff; handoff = null; return h && h.id === id ? h : null; }
+
+/* ------------------------------------------------------- findings panel */
+const SEVS = ["critical","high","medium","low","info"];
+const SEVC = {critical:"var(--red)", high:"#ff7a4b", medium:"var(--amber)", low:"var(--cyan)", info:"var(--muted)"};
+function findingsPanel(el, d, {id, protocols=null, compact=false}={}){
+  const keep = f => !protocols || protocols.has(f.protocol);
+  const all = d.findings.filter(keep), rcs = protocols ? d.root_causes.filter(r=>r.evidence.some(u=>all.some(f=>f.uid===u))) : d.root_causes;
+  const S = {q:"", sev:new Set(store("pl-fsev") || SEVS), group:store("pl-fgroup") || "category"};
+  const pk = list => list && list.length ? `<div class="pk-chips">${list.slice(0, compact?12:30).map(n=>`<button data-no="${n}" title="Show packet ${n} in Analyze">#${n}</button>`).join("")}</div>` : "";
+  el.innerHTML = `<div class="fp-bar"><input type="search" class="fp-q" placeholder="Search findings…" aria-label="Search findings">
+      <select class="fp-g" aria-label="Group findings by"><option value="category">Group: category</option><option value="protocol">Group: protocol</option><option value="none">No grouping</option></select></div>
+    <div class="fp-bar fp-sev" role="group" aria-label="Severity filter">${SEVS.map(s=>`<button class="chip-btn" data-s="${s}" style="--c:${SEVC[s]}" aria-pressed="${S.sev.has(s)}">${s} <b>${all.filter(f=>f.severity===s).length + rcs.filter(r=>r.severity===s).length}</b></button>`).join("")}</div>
+    <div class="fp-out"></div>`;
+  const out = el.querySelector(".fp-out");
+  el.querySelector(".fp-g").value = S.group;
+  const rcHTML = r => `<details class="fd rc" style="--c:${SEVC[r.severity]}"><summary>${sev(r.severity)}<span class="t">${esc(r.title)}</span><span class="chip">${Math.round(r.confidence*100)}%</span>
+      <span class="m">Root cause · fault domain: ${esc(r.fault_domain||"—")}</span></summary><div class="body"><p><b>${esc(r.verdict)}</b></p><p class="muted">${esc(r.narrative)}</p>
+      ${r.chain.length?`<h4>Chain of events</h4><ol class="chain">${r.chain.map(s=>`<li><span class="tm">${s.t==null?"":"t="+s.t.toFixed(3)+"s"}</span>${s.no?`<button class="lnk" data-no="${s.no}">#${s.no}</button> `:""}<span class="chip">${esc(s.layer)}</span>${esc(s.text)}</li>`).join("")}</ol>`:""}
+      ${r.remediation.length?`<h4>Fix</h4><ul>${r.remediation.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+      ${!compact&&Object.keys(r.perspectives||{}).length?`<h4>Perspectives</h4><div class="persp">${Object.entries(r.perspectives).map(([k,v])=>`<b>${esc(k)}</b><span>${esc(v)}</span>`).join("")}</div>`:""}</div></details>`;
+  const fHTML = f => `<details class="fd"><summary>${sev(f.severity)}<span class="t">${esc(f.title)}</span><span class="chip">${esc(f.protocol)}${f.count>1?" ×"+f.count:""}</span>
+      <span class="m">${esc(f.summary.length>160?f.summary.slice(0,160)+"…":f.summary)}</span></summary><div class="body"><p>${esc(f.summary)}</p>
+      ${f.causes.length?`<h4>Likely causes</h4><ul>${f.causes.slice(0,compact?3:6).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+      ${f.remediation.length?`<h4>Fix</h4><ul>${f.remediation.slice(0,compact?2:5).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+      ${!compact&&Object.keys(f.perspectives||{}).length?`<h4>Perspectives</h4><div class="persp">${Object.entries(f.perspectives).map(([k,v])=>`<b>${esc(k)}</b><span>${esc(v)}</span>`).join("")}</div>`:""}
+      ${f.filter?`<h4>Display filter</h4><code class="flt">${esc(f.filter)}</code> ${f.filter_ok?`<button class="lnk" data-filter="${esc(f.filter)}">Apply in Analyze</button>`
+        :`<button class="lnk" data-copy="${esc(f.filter)}" title="Wireshark syntax the built-in filter engine does not support">Copy for Wireshark</button>`}`:""}
+      ${f.packets.length?`<h4>Evidence packets</h4>${pk(f.packets)}`:""}</div></details>`;
+  function draw(){
+    const q = S.q.toLowerCase(), hit = x => S.sev.has(x.severity) && (!q || (x.title+" "+(x.summary||x.verdict)+" "+(x.protocol||"")+" "+(x.category||"")).toLowerCase().includes(q));
+    const R = rcs.filter(hit), F = all.filter(hit);
+    let h = R.length ? `<div class="fp-group"><span>Root causes</span><span>${R.length}</span></div>${R.map(rcHTML).join("")}` : "";
+    if(S.group === "none") h += F.map(fHTML).join("");
+    else { const g = {}; F.forEach(f=>(g[f[S.group]] ||= []).push(f));
+      h += Object.entries(g).sort((a,b)=>SEVS.indexOf(a[1][0].severity)-SEVS.indexOf(b[1][0].severity)).map(([k,v])=>`<div class="fp-group"><span>${esc(k)}</span><span>${v.length}</span></div>${v.map(fHTML).join("")}`).join(""); }
+    out.innerHTML = h || `<p class="muted small" style="padding:8px">${all.length||rcs.length?"Nothing matches these filters.":"No findings: this capture looks healthy."}</p>`;
+    out.querySelectorAll("[data-no]").forEach(b=>b.onclick = e=>{ e.preventDefault(); openPackets(id, {no:+b.dataset.no}); });
+    out.querySelectorAll("[data-filter]").forEach(b=>b.onclick = e=>{ e.preventDefault(); openPackets(id, {filter:b.dataset.filter}); });
+    out.querySelectorAll("[data-copy]").forEach(b=>b.onclick = e=>{ e.preventDefault();
+      navigator.clipboard ? navigator.clipboard.writeText(b.dataset.copy).then(()=>toast("Filter copied"), ()=>toast(b.dataset.copy)) : toast(b.dataset.copy); });
+  }
+  el.querySelector(".fp-q").oninput = e => { S.q = e.target.value; draw(); };
+  el.querySelector(".fp-g").onchange = e => { S.group = e.target.value; store("pl-fgroup", S.group); draw(); };
+  el.querySelectorAll(".fp-sev button").forEach(b=>b.onclick = ()=>{ const s = b.dataset.s; S.sev.has(s) ? S.sev.delete(s) : S.sev.add(s);
+    b.setAttribute("aria-pressed", S.sev.has(s)); store("pl-fsev", [...S.sev]); draw(); });
+  draw();
+}
+
 /* ---------------------------------------------------------------- routing */
 let cleanup = [];
 function onLeave(fn){ cleanup.push(fn); }
-const PL = window.PL = {api, esc, toast, onLeave, views:{}};      // shared with views in other scripts (analyze.js)
+const PL = window.PL = {api, esc, toast, onLeave, views:{}, sev, fmtT, fmtB, store, skeleton, state, showState, errorState,
+                        openPackets, takeHandoff, findingsPanel, ring, lastCapture: store("pl-last") };   // shared with analyze.js / insights.js
+PL.setCapture = id => { if(id){ PL.lastCapture = id; store("pl-last", id); } };
 function route(){
   cleanup.forEach(f=>{ try{ f(); }catch(e){} }); cleanup = [];
   const h = location.hash.slice(2) || "library";
   const [name, ...rest] = h.split("/"); const arg = decodeURIComponent(rest.join("/"));
-  document.querySelectorAll(".views a").forEach(a=>a.classList.toggle("on", a.dataset.view === name));
+  document.querySelectorAll(".views a").forEach(a=>{ const on = a.dataset.view === name || (name === "capture" && a.dataset.view === "library");
+    a.classList.toggle("on", on); on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"); });
   view.innerHTML = "";
   ({library, capture, sim, live, ...PL.views}[name] || library)(arg);
 }
+PL.route = route;
 addEventListener("hashchange", route);
-$("#upload").addEventListener("change", async e=>{
-  const f = e.target.files[0]; if(!f) return; toast(`Analyzing ${f.name}…`);
-  try{ const r = await api.post("/api/upload?name="+encodeURIComponent(f.name), await f.arrayBuffer(), true); location.hash = "#/analyze/"+encodeURIComponent(r.id); }
-  catch(err){ toast("Upload failed: "+err.message); } e.target.value = "";
-});
+async function uploadFile(f){
+  if(!f) return; toast(`Analyzing ${f.name}…`);
+  try{ const r = await api.post("/api/upload?name="+encodeURIComponent(f.name), await f.arrayBuffer(), true); PL.setCapture(r.id); location.hash = "#/analyze/"+encodeURIComponent(r.id); }
+  catch(err){ toast("Upload failed: "+err.message); }
+}
+$("#upload").addEventListener("change", async e=>{ await uploadFile(e.target.files[0]); e.target.value = ""; });
+
+/* drop a capture anywhere (views with their own drop zone handle it first) */
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types||[])].includes("Files");
+addEventListener("dragenter", e=>{ if(!hasFiles(e)) return; dragDepth++; $("#drop-ov").classList.add("on"); });
+addEventListener("dragleave", e=>{ if(!hasFiles(e)) return; if(--dragDepth <= 0){ dragDepth = 0; $("#drop-ov").classList.remove("on"); } });
+addEventListener("dragover", e=>{ if(hasFiles(e)) e.preventDefault(); });
+addEventListener("drop", e=>{ dragDepth = 0; $("#drop-ov").classList.remove("on"); if(!hasFiles(e) || e.defaultPrevented) return;
+  e.preventDefault(); uploadFile(e.dataTransfer.files[0]); });
+
+/* theme */
+function setTheme(t, save=true){ document.documentElement.dataset.theme = t; if(save) store("pl-theme", t); $("#theme-ic").textContent = t === "light" ? "☀" : "☾";
+  $("#btn-theme").setAttribute("aria-label", `Switch to ${t === "light" ? "dark" : "light"} theme`); }
+const toggleTheme = () => setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+$("#btn-theme").onclick = toggleTheme;
+setTheme(document.documentElement.dataset.theme || "dark", false);   // keep following the OS until the user picks
 
 /* ---------------------------------------------------------------- library */
 async function library(){
   view.innerHTML = `<div class="hero"><div><h1>Capture library</h1><div class="muted" id="lib-meta">Loading…</div></div><div class="spacer"></div>
-    <input type="search" id="lib-q" placeholder="Filter folders, files, protocols…" aria-label="Filter captures" style="width:min(380px,100%)"></div><div class="libgrid" id="lib"></div>`;
+    <input type="search" id="lib-q" placeholder="Filter folders, files, protocols…  ( / )" aria-label="Filter captures" style="width:min(380px,100%)"></div><div id="lib">${skeleton("library")}</div>`;
   let data;
-  try{ data = await api.get("/api/library"); } catch(e){ view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  if(!data.root){ $("#lib").innerHTML = `<div class="panel empty">No library folder. Start with <code>packetlens app &lt;folder&gt;</code>, or use <b>Open capture…</b> or the <b>Simulator</b>.</div>`; $("#lib-meta").textContent = ""; return; }
+  try{ data = await api.get("/api/library"); } catch(e){ errorState(view, e); return; }
+  if(!data.root){ $("#lib-meta").textContent = "";
+    showState($("#lib"), {icon:"⌂", title:"No library folder", msg:"Start the Studio with a folder (packetlens app <folder>), drop a capture file anywhere on this page, or build one in the Simulator.",
+      actions:[{label:"Open capture…", onclick:()=>$("#upload").click()}, {label:"Simulator", href:"#/sim"}]}); return; }
+  $("#lib").className = "libgrid";
   const render = d => {
     const n = d.folders.reduce((a,f)=>a+f.captures.length,0);
     $("#lib-meta").innerHTML = `<span class="stat mono" style="color:var(--cyan)">${n}</span> captures in ${d.folders.length} folders · <span class="mono small">${esc(d.root)}</span>`
@@ -57,11 +152,14 @@ async function library(){
           : c.error ? `<span style="color:var(--red)">cannot analyze: ${esc(c.error)}</span>` : "analyzing…"}</div>
         ${(c.protocols||[]).map(p=>`<span class="chip">${esc(p)}</span>`).join("")}
         <a class="chip pk-link" href="#/analyze/${encodeURIComponent(c.id)}" title="Wireshark-style packet view">▤ Packets</a></div></div>`).join("")}</section>`).join("");
-    view.querySelectorAll(".cap-tile").forEach(t=>{ const go = e=>{ if(e && e.target.closest(".pk-link")) return; location.hash = "#/capture/"+encodeURIComponent(t.dataset.id); };
+    view.querySelectorAll(".cap-tile").forEach(t=>{ const go = e=>{ if(e && e.target.closest(".pk-link")) return; PL.setCapture(t.dataset.id); location.hash = "#/capture/"+encodeURIComponent(t.dataset.id); };
       t.onclick = go; t.onkeydown = e=>{ if(e.key==="Enter") go(); }; });
     filter();
   };
-  const filter = () => { const q = ($("#lib-q")||{}).value?.toLowerCase() || ""; view.querySelectorAll(".folder").forEach(s=>s.style.display = s.dataset.q.includes(q) ? "" : "none"); };
+  const filter = () => { const q = ($("#lib-q")||{}).value?.toLowerCase() || ""; let shown = 0;
+    view.querySelectorAll(".folder").forEach(s=>{ const on = s.dataset.q.includes(q); s.style.display = on ? "" : "none"; shown += on; });
+    let none = $("#lib-none"); if(!shown && !none){ $("#lib").insertAdjacentHTML("afterend", `<p class="muted" id="lib-none" style="padding:12px">No capture matches \u201c${esc(q)}\u201d.</p>`); }
+    else if(shown && none) none.remove(); };
   $("#lib-q").oninput = filter;
   render(data);
   try{ const full = await api.get("/api/library?analyze=1"); if(view.contains($("#lib"))) render(full); } catch(e){ toast(e.message); }
@@ -69,21 +167,23 @@ async function library(){
 
 /* ------------------------------------------------------------ capture view */
 async function capture(id){
-  view.innerHTML = `<div class="empty">Analyzing ${esc(id)}…</div>`;
+  view.innerHTML = skeleton();
   let d;
-  try{ d = await api.get("/api/capture?id="+encodeURIComponent(id)); } catch(e){ view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  try{ d = await api.get("/api/capture?id="+encodeURIComponent(id)); } catch(e){ errorState(view, e); return; }
+  PL.setCapture(id);
   const H = d.stats.health.overall;
   view.innerHTML = `<div class="hero"><div>${ring(H)}</div><div><h1>${esc(d.meta.source)}</h1><div class="muted small">${d.stats.packets.toLocaleString()} packets · ${fmtT(d.stats.duration)} ·
       ${d.findings.length} findings · ${d.root_causes.length} root causes</div></div><div class="spacer"></div>
       ${d.path_folder?`<div class="row"><span class="small muted">Path:</span><button class="ghost" data-v="0">This capture</button><button class="ghost" data-v="1">Whole folder</button></div>`:""}
       <a class="btn ghost" href="#/analyze/${encodeURIComponent(id)}">▤ Packets</a>
+      <a class="btn ghost" href="#/insights/${encodeURIComponent(id)}">◈ Insights${d.crypto&&d.crypto.readiness.score!=null?` · PQC ${d.crypto.readiness.score}`:""}</a>
       <a class="btn ghost" target="_blank" rel="noopener" href="/api/report?id=${encodeURIComponent(id)}">Full report ↗</a></div>
     <div class="studio"><div><div class="stage" id="stage"><div class="hud"><button id="play">▶ Replay capture</button><button class="ghost" id="rot">Auto-rotate</button><button class="ghost" id="refit">Fit</button></div>
       <div class="legend"><span><i style="color:var(--lime);background:var(--lime)"></i>ok</span><span><i style="color:var(--amber);background:var(--amber)"></i>retransmission / warning</span>
         <span><i style="color:var(--red);background:var(--red)"></i>failed / dropped</span><span><i style="color:var(--cyan);background:var(--cyan)"></i>capture point</span></div>
       <div class="caption" id="cap">Replay plays every captured packet across the inferred path in capture-time order.</div></div>
       <div class="timeline"><button class="ghost" id="tl-play" aria-label="Play or pause">▶</button><select class="speed" id="speed" aria-label="Speed"></select><canvas id="tl" height="46"></canvas><span class="clock" id="clock">0.00 s</span></div></div>
-    <div class="side"><div class="panel"><div class="tabs" role="tablist"><button data-t="flows" class="on">Flows</button><button data-t="find">Findings</button><button data-t="streams">TCP streams</button><button data-t="notes">How inferred</button></div><div id="tab"></div></div>
+    <div class="side"><div class="panel"><div class="tabs" role="tablist"><button data-t="flows" class="on">Flows</button><button data-t="find">Findings (${d.findings.length + d.root_causes.length})</button><button data-t="streams">TCP streams</button><button data-t="notes">How inferred</button></div><div id="tab"></div></div>
       <div class="panel" id="detail"><span class="muted small">Select a flow or a device.</span></div></div></div>
     <div class="ribbon" id="ribbon"><div class="stage" id="rib-stage"><button class="close" id="rib-close">Close ✕</button><div class="caption" id="rib-cap"></div></div></div>`;
   let graph = d.path || {nodes:[], links:[], flows:[], notes:[]};
@@ -97,9 +197,7 @@ async function capture(id){
     flows(){ $("#tab").innerHTML = `<div class="list">${graph.flows.map((f,i)=>`<div class="item" data-f="${i}"><span class="dot st-${esc(f.status)}"></span><div>${esc(f.label)}
       <div class="small muted">${esc(f.status)} · ${f.packets} pkt${f.captures&&f.captures.length>1?` · ${f.captures.length} capture points`:""}</div></div></div>`).join("")||'<div class="muted small">No flows inferred.</div>'}</div>`;
       $("#tab").querySelectorAll(".item").forEach(it=>it.onclick=()=>selectFlow(+it.dataset.f)); },
-    find(){ $("#tab").innerHTML = (d.root_causes.map(r=>`<div class="find">${sev(r.severity)} <b>${esc(r.title)}</b><div class="small">${esc(r.verdict)}</div>
-        <div class="small muted">Fix: ${esc((r.remediation||[])[0]||"—")}</div></div>`).join("") + d.findings.map(f=>`<div class="find">${sev(f.severity)} <b>${esc(f.title)}</b>
-        <div class="small muted">${esc(f.summary)}</div></div>`).join("")) || '<div class="muted small">No findings — this capture looks healthy.</div>'; },
+    find(){ findingsPanel($("#tab"), d, {id, compact:true}); },
     streams(){ $("#tab").innerHTML = `<div class="list">${d.streams.slice(0,200).map(s=>`<div class="item" data-s="${s.id}"><span class="dot ${Object.keys(s.flags).some(k=>/retrans|lost|zero|dup/.test(k))?"st-warn":s.rst?"st-fail":"st-ok"}"></span>
       <div>#${s.id} ${esc(s.client)} → ${esc(s.server)} <span class="chip">${esc(s.app)}</span><div class="small muted">${s.packets} pkts · iRTT ${s.irtt_ms??"—"} ms · ${esc(Object.entries(s.flags).map(([k,v])=>k+" "+v).join(", ")||"clean")}</div></div></div>`).join("")||'<div class="muted small">No TCP streams.</div>'}</div>
       <p class="small muted">Click a stream for its 3D sequence ribbon.</p>`;
@@ -398,6 +496,107 @@ async function live(){
   }
   $("#l-stop").onclick = () => { if(es){ es.close(); es = null; } finish(); };
 }
+
+/* -------------------------------------------------------- command palette */
+const PAL_FILTERS = ["tls.pqc", "tls.handshake.type == 1", "ssh", "isakmp", "esp", "macsec || mka", "quic", "wg", "infiniband || pfc",
+  "http.request", "http2", "tcp.analysis.flags", "tcp.flags.reset == 1", "dns.flags.rcode != 0", "icmp || icmpv6"];
+let libCache = null;
+async function captures(){
+  if(!libCache){ try{ const l = await api.get("/api/library"); libCache = (l.folders||[]).flatMap(f=>f.captures.map(c=>({id:c.id, name:c.name, folder:f.name}))); }catch(e){ libCache = []; } }
+  return libCache;
+}
+function commands(caps){
+  const cur = PL.lastCapture, enc = encodeURIComponent, go = h => () => location.hash = h;
+  const out = [
+    {g:"View", ic:"⌂", t:"Library", k:"g l", run:go("#/library")}, {g:"View", ic:"▤", t:"Analyze packets", k:"g a", run:go("#/analyze" + (cur ? "/"+enc(cur) : ""))},
+    {g:"View", ic:"◈", t:"Insights: crypto, PQC, AI traffic, AI fabric", k:"g i", run:go("#/insights" + (cur ? "/"+enc(cur) : ""))},
+    {g:"View", ic:"⚡", t:"Simulator", k:"g s", run:go("#/sim")}, {g:"View", ic:"●", t:"Live capture", k:"g v", run:go("#/live")},
+    {g:"Action", ic:"⇪", t:"Open a capture file…", run:()=>$("#upload").click()},
+    {g:"Action", ic:"◐", t:"Switch light / dark theme", k:"t", run:toggleTheme},
+    {g:"Action", ic:"?", t:"Keyboard shortcuts", k:"?", run:showKeys},
+  ];
+  if(cur){
+    const name = cur.replace(/^upload:[^:]+:/, "");
+    out.push({g:"Current capture", ic:"◈", t:`Crypto & PQC dashboard · ${name}`, run:go(`#/insights/${enc(cur)}/crypto`)},
+             {g:"Current capture", ic:"✦", t:`AI traffic · ${name}`, run:go(`#/insights/${enc(cur)}/ai`)},
+             {g:"Current capture", ic:"⧉", t:`AI fabric (RoCE / PFC) · ${name}`, run:go(`#/insights/${enc(cur)}/fabric`)},
+             {g:"Current capture", ic:"◎", t:`3D path view · ${name}`, run:go(`#/capture/${enc(cur)}`)});
+    PAL_FILTERS.forEach(f=>out.push({g:"Display filter", ic:"⏷", t:f, run:()=>openPackets(cur, {filter:f})}));
+  }
+  caps.forEach(c=>out.push({g:"Capture", ic:"◇", t:`${c.folder} / ${c.name}`, run:()=>{ PL.setCapture(c.id); location.hash = "#/capture/"+enc(c.id); }}));
+  return out;
+}
+function fuzzy(q, s){                       // subsequence match; returns [score, highlighted html] or null
+  if(!q) return [0, esc(s)];
+  const L = s.toLowerCase(); let i = 0, score = 0, last = -2, html = "";
+  for(let k = 0; k < s.length; k++){
+    if(i < q.length && L[k] === q[i]){ score += k === last + 1 ? 3 : 1; if(k === 0 || " /·:".includes(s[k-1])) score += 2; last = k; i++; html += `<mark>${esc(s[k])}</mark>`; }
+    else html += esc(s[k]);
+  }
+  return i === q.length ? [score - s.length * .01, html] : null;
+}
+let palItems = [], palSel = 0, palPrevFocus = null;
+async function openPalette(){
+  const p = $("#pal"); if(!p.hidden) return;
+  palPrevFocus = document.activeElement; p.hidden = false; $("#pal-q").value = ""; $("#pal-q").focus();
+  const all = commands(await captures());
+  const draw = () => {
+    const q = $("#pal-q").value.trim().toLowerCase();
+    palItems = all.map(c=>{ const m = fuzzy(q, c.t); return m && {...c, score:m[0], html:m[1]}; }).filter(Boolean)
+      .sort((a,b)=>b.score - a.score).slice(0, 60);
+    palSel = Math.min(palSel, Math.max(0, palItems.length - 1));
+    $("#pal-list").innerHTML = palItems.map((c,i)=>`<div class="pal-item" role="option" id="pal-${i}" aria-selected="${i===palSel}" data-i="${i}">
+      <span class="ic" aria-hidden="true">${c.ic}</span><span>${c.html}<div class="grp">${esc(c.g)}</div></span>${c.k?`<kbd>${esc(c.k)}</kbd>`:"<span></span>"}</div>`).join("")
+      || `<div class="muted small" style="padding:12px">No match.</div>`;
+    $("#pal-q").setAttribute("aria-activedescendant", palItems.length ? "pal-"+palSel : "");
+    $("#pal-list").querySelectorAll(".pal-item").forEach(el=>{ el.onclick = ()=>runPal(+el.dataset.i); el.onmousemove = ()=>{ if(palSel !== +el.dataset.i){ palSel = +el.dataset.i; mark(); } }; });
+  };
+  const mark = () => { $("#pal-list").querySelectorAll(".pal-item").forEach((el,i)=>el.setAttribute("aria-selected", i===palSel));
+    $("#pal-"+palSel)?.scrollIntoView({block:"nearest"}); $("#pal-q").setAttribute("aria-activedescendant", "pal-"+palSel); };
+  $("#pal-q").oninput = () => { palSel = 0; draw(); };
+  $("#pal-q").onkeydown = e => {
+    if(e.key === "ArrowDown"){ e.preventDefault(); palSel = Math.min(palItems.length-1, palSel+1); mark(); }
+    else if(e.key === "ArrowUp"){ e.preventDefault(); palSel = Math.max(0, palSel-1); mark(); }
+    else if(e.key === "Enter"){ e.preventDefault(); runPal(palSel); }
+    else if(e.key === "Escape"){ e.preventDefault(); closePalette(); }
+  };
+  draw();
+}
+function closePalette(){ $("#pal").hidden = true; if(palPrevFocus && palPrevFocus.focus) palPrevFocus.focus(); }
+function runPal(i){ const c = palItems[i]; if(!c) return; closePalette(); c.run(); }
+$("#pal").addEventListener("mousedown", e=>{ if(e.target.id === "pal") closePalette(); });
+$("#btn-pal").onclick = openPalette;
+addEventListener("hashchange", ()=>{ libCache = null; });
+
+function showKeys(){
+  const K = [["Ctrl K / ⌘ K","Command palette"],["?","This help"],["/","Focus the search or filter box"],["t","Switch light / dark theme"],
+    ["g then l","Library"],["g then a","Analyze"],["g then i","Insights"],["g then s","Simulator"],["g then v","Live capture"],
+    ["↑ ↓ PgUp PgDn Home End","Move in the packet list (Analyze)"],["Ctrl M","Mark packet (Analyze)"],["Esc","Close dialogs"]];
+  const p = $("#pal"); palPrevFocus = document.activeElement; p.hidden = false;
+  $("#pal-list").innerHTML = `<div style="padding:12px 14px"><h2>Keyboard shortcuts</h2><div class="keys">${K.map(([k,v])=>`<span>${k.split(" ").map(x=>x==="then"?" then ":`<kbd>${esc(x)}</kbd>`).join("")}</span><span>${esc(v)}</span>`).join("")}</div></div>`;
+  $("#pal-q").value = ""; $("#pal-q").focus();
+  $("#pal-q").oninput = () => openPaletteFrom();
+  $("#pal-q").onkeydown = e => { if(e.key === "Escape"){ e.preventDefault(); closePalette(); } };
+}
+function openPaletteFrom(){ const q = $("#pal-q").value; $("#pal").hidden = true; openPalette().then(()=>{ $("#pal-q").value = q; $("#pal-q").dispatchEvent(new Event("input")); }); }
+
+let gPending = 0;
+addEventListener("keydown", e=>{
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"){ e.preventDefault(); $("#pal").hidden ? openPalette() : closePalette(); return; }
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+  if(typing || e.ctrlKey || e.metaKey || e.altKey || !$("#pal").hidden) return;
+  if(gPending && Date.now() - gPending < 1200){
+    gPending = 0;
+    const cur = PL.lastCapture ? "/" + encodeURIComponent(PL.lastCapture) : "";
+    const to = {l:"#/library", a:"#/analyze"+cur, i:"#/insights"+cur, s:"#/sim", v:"#/live"}[e.key.toLowerCase()];
+    if(to){ e.preventDefault(); location.hash = to; }
+    return;
+  }
+  if(e.key === "g"){ gPending = Date.now(); return; }
+  if(e.key === "?"){ e.preventDefault(); showKeys(); }
+  else if(e.key === "t"){ toggleTheme(); }
+  else if(e.key === "/"){ const s = view.querySelector("input[type=search], #wb-q, .fp-q"); if(s){ e.preventDefault(); s.focus(); s.select && s.select(); } }
+});
 
 if(!window.THREE){ view.innerHTML = '<div class="empty">three.min.js failed to load — the 3D views need it.</div>'; }
 else addEventListener("DOMContentLoaded", route);                   // after every view script has registered

@@ -360,8 +360,11 @@ async function analyze(id){
   }
 
   // -------------------------------------------------------------- start
-  await applyFilter("");
+  PL.setCapture(id);
+  const ho = PL.takeHandoff(id);                     // "open packet #N" / "apply this filter" from findings, Insights, palette
+  if(ho && ho.filter){ $("#wb-q").value = ho.filter; await applyFilter(ho.filter); } else await applyFilter("");
   $("#wb-list").focus();
+  if(ho && ho.no){ $("#wb-goto").value = ho.no; $("#wb-goto").dispatchEvent(new KeyboardEvent("keydown", {key:"Enter"})); }
 }
 PL.views.analyze = analyze;
 })();
