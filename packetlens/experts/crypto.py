@@ -30,6 +30,8 @@ def run(ctx) -> None:
     sessions: list = []
     certs: list = []
     _tls(ctx, sessions, certs)
+    _quic(ctx, sessions)
+    _wireguard(ctx, sessions)
     _ssh(ctx, sessions)
     _ike(ctx, sessions)
     _esp(ctx)
@@ -138,6 +140,66 @@ def _tls(ctx, sessions, certs):
     ctx._pqc_tls = {"quantum_safe": q, "blocked": blocked, "not_selected": not_sel}
 
 
+def _quic(ctx, sessions):
+    """TLS 1.3 inside QUIC (from decrypted Initial packets, experts.quic)."""
+    for q in getattr(ctx, "quic_sessions", []):
+        ch, sh = q.get("client_hello"), q.get("server_hello")
+        s = _session("QUIC", q["client"], q["server"], q.get("sni") or q["server"], q["no"], q["t"],
+                     packets=q["c_initials"][:4] + q["s_initials"][:4], version=f"QUIC v{q['version']}")
+        if ch:
+            s["offered"] = ch["groups"]
+            s["offered_status"] = pqc.best(pqc.tls_group(g)[1] for g in ch["group_codes"])
+        if sh:
+            s["kex"], s["kex_status"] = tls.key_exchange(sh)
+            s["cipher"] = f"0x{sh['cipher']:04x}"
+            s["result"] = "ok"
+        elif not q["answered"]:
+            s["result"] = "no response"
+        elif not q["decrypted"]:
+            s["notes"].append("Initial packets not decrypted (install 'cryptography')")
+        sessions.append(s)
+
+
+def _wireguard(ctx, sessions):
+    """WireGuard handshakes: Noise_IKpsk2 with Curve25519 - quantum-vulnerable unless a PSK (e.g. Rosenpass) is mixed in."""
+    peers: dict = {}
+    for p in ctx.packets:
+        d = p.layers.get("wireguard")
+        if not d:
+            continue
+        if d["type_num"] == 1:
+            s = peers.setdefault((p.src, p.dst), _session("WireGuard", p.src, f"{p.dst}:{p.dport}", f"{p.dst}:{p.dport}", p.no, p.rel_ts,
+                                                          kex="Noise_IKpsk2 (Curve25519)", kex_status="classical",
+                                                          cipher="ChaCha20-Poly1305", initiations=0, responses=0, cookies=0,
+                                                          data=0, senders={}))
+            s["initiations"] += 1
+            s["senders"][d["sender"]] = p.no
+            if len(s["packets"]) < 10:
+                s["packets"].append(p.no)
+        elif d["type_num"] in (2, 3):
+            s = peers.get((p.dst, p.src))
+            if s:
+                s["responses" if d["type_num"] == 2 else "cookies"] += 1
+                if len(s["packets"]) < 10:
+                    s["packets"].append(p.no)
+        elif d["type_num"] == 4:
+            s = peers.get((p.src, p.dst)) or peers.get((p.dst, p.src))
+            if s:
+                s["data"] += 1
+    failed = []
+    for s in peers.values():
+        s["result"] = "ok" if s["responses"] else "no handshake response"
+        s["notes"].append("quantum-resistant only if a pre-shared key is configured (e.g. Rosenpass)")
+        if s["cookies"]:
+            s["notes"].append(f"{s['cookies']} cookie reply(s): responder under load")
+        if not s["responses"] and s["initiations"] >= 2:
+            failed.append(s)
+        s.pop("senders")
+        sessions.append(s)
+    _emit(ctx, "wireguard_handshake_failure", failed, "; ".join(
+        f"{s['client']} → {s['server']}: {s['initiations']} handshake initiation(s), no response" for s in failed[:5]))
+
+
 # ------------------------------------------------------------------ SSH ---
 def _ssh(ctx, sessions):
     by_stream: dict = {}
@@ -239,7 +301,7 @@ def _ike(ctx, sessions):
             s["intermediate"] = True
         if d.get("frag"):
             s["ike_frags"] += 1
-        if p.ip_mf or p.ip_frag_offset or "reassembled" in p.tags:
+        if p.ip_mf or p.ip_frag_offset or "ip_reassembled" in p.tags:
             s["ip_fragmented"] = True
         for n in d["notify"]:
             if n["error"]:

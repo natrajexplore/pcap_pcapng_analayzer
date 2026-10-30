@@ -76,6 +76,7 @@ class Packet:
     ip_frag_offset: int = 0
     ip_checksum_ok: Optional[bool] = None
     dscp: int = 0
+    ecn: int = 0                   # 0 Not-ECT, 1/2 ECT, 3 CE (congestion experienced)
     # layer 4
     tcp: Optional[TCPInfo] = None
     sport: Optional[int] = None

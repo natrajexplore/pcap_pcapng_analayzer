@@ -5,8 +5,8 @@ import socket
 import struct
 
 from .packet import Packet, TCPInfo
-from .protocols import (auth, bgp, dhcp, dns, eigrp, fhrp, http, ike, isis, l2, l2ctl, macsec, mcast, ospf, rip, ssh, tls,
-                        tunnel, wlan)
+from .protocols import (auth, bgp, dhcp, dns, eigrp, fhrp, http, ike, isis, l2, l2ctl, macsec, mcast, ospf, quic, rip, roce,
+                        ssh, tls, tunnel, wireguard, wlan)
 from .reader import RawFrame
 
 IP_PROTOS = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 51: "AH", 58: "ICMPv6",
@@ -153,6 +153,9 @@ def _ethertype(p: Packet, etype: int, buf: bytes) -> None:
         if d:
             p.layers["eapol"] = d
             p.info = auth.eapol_info(d)
+    elif etype == roce.MAC_CONTROL and (d := roce.parse_mac_control(buf)):
+        _set(p, "pfc", d, roce.pause_info(d))
+        p.protocol = d["type"] if d["type"] in ("PFC", "PAUSE") else "MAC-CTRL"
     elif etype == macsec.ETHERTYPE and (d := macsec.parse_sectag(buf)):
         _set(p, "macsec", d, macsec.sectag_info(d))
     elif etype in l2ctl.ETHERTYPE_LABELS:
@@ -168,6 +171,7 @@ def _ip(p: Packet, buf: bytes) -> None:
         tot, ident, frag, ttl, proto = struct.unpack("!HHHBB", buf[2:10])
         p.ip_version, p.ip_hdr_len, p.ip_len, p.ip_id, p.ttl, p.ip_proto = 4, ihl, tot, ident, ttl, proto
         p.dscp = buf[1] >> 2
+        p.ecn = buf[1] & 0x03
         p.ip_df, p.ip_mf, p.ip_frag_offset = bool(frag & 0x4000), bool(frag & 0x2000), (frag & 0x1FFF) * 8
         p.src = socket.inet_ntoa(buf[12:16])
         p.dst = socket.inet_ntoa(buf[16:20])
@@ -185,6 +189,7 @@ def _ip(p: Packet, buf: bytes) -> None:
     elif ver == 6:
         plen, nh, hlim = struct.unpack("!HBB", buf[4:8])
         p.ip_version, p.ttl, p.ip_hdr_len = 6, hlim, 40
+        p.ecn = (buf[1] >> 4) & 0x03
         p.src = socket.inet_ntop(socket.AF_INET6, buf[8:24])
         p.dst = socket.inet_ntop(socket.AF_INET6, buf[24:40])
         p.ip_len = plen + 40
@@ -377,6 +382,10 @@ def _udp_app(p: Packet, payload: bytes) -> None:
         d = auth.parse_radius(payload)
         if d:
             return _set(p, "radius", d, auth.radius_info(d))
+    if p.dport == roce.PORT and (d := roce.parse_bth(payload)):
+        _set(p, "roce", d, roce.bth_info(d))
+        p.protocol = "RoCEv2"
+        return
     if (500 in ports or 4500 in ports) and (d := ike.parse(payload, natt=4500 in ports)):
         _set(p, "esp" if d["kind"] == "esp" else "ike", d, ike.info(d))
         p.protocol = "ESP" if d["kind"] == "esp" else "ISAKMP"
@@ -402,9 +411,20 @@ def _udp_app(p: Packet, payload: bytes) -> None:
         d = rip.parse(payload)
         if d:
             return _set(p, "rip", d, rip.info(d))
+    if (d := wireguard.parse(payload, wireguard.PORT in ports)):
+        _set(p, "wireguard", d, wireguard.info(d))
+        p.protocol = "WireGuard"
+        return
     if 443 in ports and payload:                    # UDP/443 is QUIC; short-header packets carry most of the data
+        d = quic.parse(payload)
         p.protocol = "QUIC"
-        p.info = f"QUIC {'long' if payload[0] & 0x80 else 'short'} header ({len(payload)} bytes)"
+        if d is None:
+            p.info = f"QUIC {'long' if payload[0] & 0x80 else 'short'} header ({len(payload)} bytes)"
+            return
+        if d.get("type") == "Initial":
+            d["raw"] = bytes(payload)              # decrypted later by experts.quic (needs the connection's first DCID)
+        p.layers["quic"] = d
+        p.info = quic.info(d)
         return
     name = WELL_KNOWN.get(p.dport) or WELL_KNOWN.get(p.sport)
     if name:

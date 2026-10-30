@@ -58,7 +58,7 @@ def correlate(ctx) -> list[RootCause]:
     out: list[RootCause] = []
     for rule in (_firewall_block, _middlebox_reset, _pmtud, _routing_impact, _bgp_transport, _ospf_adjacency,
                  _eigrp_adjacency, _isis_adjacency, _fhrp, _dns_impact, _dhcp_chain, _rogue_dhcp, _arp_mitm, _receiver_bottleneck,
-                 _loss_vs_server, _stp_l2, _attack_chain, _capture_quality, _crypto):
+                 _loss_vs_server, _stp_l2, _attack_chain, _capture_quality, _crypto, _fabric, _quic_fallback):
         try:
             out.extend(rule(ctx) or [])
         except Exception as exc:  # a broken rule must never break the report
@@ -694,4 +694,57 @@ def _crypto(ctx):
                 [step(ctx, n, "Security", "MKPDU with no live peers") for n in f.packets[:3]], [f.uid], f.entities,
                 {"security": "Configure the same key chain (CKN/CAK) on both ends.", "network": "Check the port's MACsec policy."},
                 ["Align the MKA key chain on both ends"], ["Automate key-chain distribution and rollover"], "security"))
+    return res
+
+
+def _fabric(ctx):
+    """GPU fabric: pause storm + RoCE loss/congestion = lossless class congested; RoCE loss with no PFC/ECN = lossy RoCE."""
+    res = []
+    storm, loss, cong, not_ect = (_by(ctx, x) for x in ("pfc_storm", "roce_packet_loss", "roce_congestion", "roce_not_ect"))
+    if storm and (loss or cong):
+        f = storm[0]
+        res.append(RootCause(
+            "fabric_congestion_spreading", "Congestion spreading in the RDMA fabric (PFC pause storm)", "critical", 0.8,
+            "A port keeps pausing the lossless RoCE priority, so RDMA traffic behind it stalls and the congestion spreads upstream.",
+            f.summary + ". At the same time RoCE flows show " + " and ".join(
+                x for x in ("loss / retransmissions" if loss else "", "congestion notifications" if cong else "") if x)
+            + ". PFC stops the upstream link for that priority entirely, so every flow sharing it (not only the congested one) waits: "
+              "head-of-line blocking that slows every rank of the collective operation.",
+            [step(ctx, n, "Link", "PFC pause") for n in f.packets[:3]] +
+            [step(ctx, x.packets[0] if x.packets else None, "Transport", x.title) for x in (loss + cong)[:3]],
+            [x.uid for x in storm + loss + cong], f.entities,
+            {"network": "Find the port sending the pauses; check whether it is a slow receiver (NIC) or a congested switch egress.",
+             "server": "A hung or slow NIC/driver on the pausing host is a classic trigger.",
+             "application": "Training throughput drops for the whole job, not just one flow."},
+            ["Enable the PFC watchdog on switches", "Fix the slow receiver or rebalance the congested links"],
+            ["Make ECN/DCQCN the primary congestion control and keep PFC as a backstop"], "network"))
+    if loss and not storm and not _by(ctx, "pfc_active") and (not_ect or not cong):
+        f = loss[0]
+        res.append(RootCause(
+            "roce_lossy_fabric", "RoCEv2 running over a lossy fabric (no PFC, no ECN feedback)", "high", 0.7,
+            "RoCE packets are being lost and neither PFC pauses nor ECN congestion feedback are visible, so the fabric is not lossless for RDMA.",
+            f.summary + ". RoCEv2 RC recovers with go-back-N, so even 0.1% loss costs a large share of throughput. "
+            + ("The RoCE packets are not even ECN-capable, so DCQCN cannot react. " if not_ect else ""),
+            [step(ctx, n, "Transport", "RoCE PSN gap / NAK") for n in f.packets[:4]], [x.uid for x in loss + not_ect], f.entities,
+            {"network": "Apply the RoCE QoS profile on every hop: DSCP trust, PFC on the RoCE priority, ECN marking thresholds.",
+             "server": "Enable ECN/DCQCN on the NICs."},
+            ["Configure PFC + ECN for the RoCE class end to end", "Check link error counters on the lossy path"],
+            ["Validate the fabric with an RDMA perftest before running jobs"], "network"))
+    return res
+
+
+def _quic_fallback(ctx):
+    res = []
+    for f in _by(ctx, "quic_blocked"):
+        if "fell back to TCP" not in f.summary:
+            continue
+        res.append(RootCause(
+            "quic_fallback", "UDP/443 blocked: clients fall back from QUIC to TCP", "low", 0.8,
+            "Clients try HTTP/3 over QUIC, get no answer and retry the same servers over TCP/TLS.",
+            f.summary + ". Every first connection pays the QUIC timeout before falling back; HTTP/3 benefits (0-RTT, no head-of-line "
+            "blocking, connection migration) are lost. Usually a firewall policy forcing traffic through TLS inspection.",
+            [step(ctx, n, "Transport", "QUIC Initial without answer") for n in f.packets[:3]], [f.uid], f.entities,
+            {"network": "Allow UDP/443, or reject it actively (ICMP unreachable) so clients fall back at once.",
+             "client": "Browsers remember the failure for a while, so later loads use TCP directly."},
+            ["Decide the QUIC policy and implement it cleanly"], ["Monitor UDP/443 drops at the perimeter"], "network"))
     return res

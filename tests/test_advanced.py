@@ -141,7 +141,7 @@ class FragmentTests(unittest.TestCase):
 class HTTP2Tests(unittest.TestCase):
     @unittest.skipUnless(http2.HAVE_HPACK, "hpack not installed")
     def test_h2_transactions_and_goaway(self):
-        tx = [t for t in A.http_transactions if t["version"] == "HTTP/2"]
+        tx = [t for t in A.http_transactions if t["version"] == "HTTP/2" and t["host"] == "shop.example"]
         self.assertEqual({(t["uri"], t["status"]) for t in tx}, {("/api/items", 200), ("/api/checkout", 503)})
         self.assertIn("http2_goaway", IDS)
 

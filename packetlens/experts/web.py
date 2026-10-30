@@ -8,6 +8,9 @@ from ..knowledge import make
 
 SUSPICIOUS_UA = re.compile(r"(?i)(nmap|gobuster|sqlmap|nikto|dirbuster|masscan|wfuzz|hydra|zgrab|Mozilla/4\.0)")
 FILE_EXT = re.compile(r"(?i)\.(exe|zip|bin|ps1|dll|msi|tar|scr|bat|hta|jar|vbs)(\?|$)")
+GRPC_STATUS = {1: "CANCELLED", 2: "UNKNOWN", 3: "INVALID_ARGUMENT", 4: "DEADLINE_EXCEEDED", 5: "NOT_FOUND", 6: "ALREADY_EXISTS",
+               7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED", 9: "FAILED_PRECONDITION", 10: "ABORTED", 11: "OUT_OF_RANGE",
+               12: "UNIMPLEMENTED", 13: "INTERNAL", 14: "UNAVAILABLE", 15: "DATA_LOSS", 16: "UNAUTHENTICATED"}
 
 
 def run(ctx) -> None:
@@ -135,6 +138,7 @@ def _http2(ctx) -> list:
     """HTTP/2 request/response pairing per (TCP stream, h2 stream id) + GOAWAY / RST_STREAM findings."""
     F = ctx.findings
     open_: dict = {}
+    done: dict = {}
     txs, goaway, rst = [], [], []
     for p in ctx.packets:
         h = p.layers.get("http2")
@@ -151,12 +155,19 @@ def _http2(ctx) -> list:
                      "version": "HTTP/2", "user_agent": hdrs.get("user-agent"), "status": None, "reason": "",
                      "time_ms": None, "response_no": None, "auth": "authorization" in hdrs, "body": "",
                      "content_type": None, "h2_stream": fr["stream"], "tls": bool(h.get("tls"))}
+                if hdrs.get("content-type", "").startswith("application/grpc"):
+                    t["grpc"] = hdrs.get(":path", "").lstrip("/")
                 open_[key] = t
                 txs.append(t)
             elif fr["type"] == "HEADERS" and ":status" in hdrs and key in open_:
                 t = open_.pop(key)
                 t.update(status=int(hdrs[":status"]), time_ms=round((p.ts - t["ts"]) * 1000, 3), response_no=p.no,
                          content_type=hdrs.get("content-type"))
+                done[key] = t
+            if fr["type"] == "HEADERS" and "grpc-status" in hdrs and key in done:     # trailers (or trailers-only response)
+                t = done[key]
+                t.update(grpc_status=int(hdrs["grpc-status"]), grpc_message=hdrs.get("grpc-message", ""),
+                         grpc_time_ms=round((p.ts - t["ts"]) * 1000, 3), grpc_no=p.no)
             elif fr["type"] == "GOAWAY" and fr.get("error") != "NO_ERROR":
                 goaway.append((p, fr))
             elif fr["type"] == "RST_STREAM" and fr.get("error") not in ("NO_ERROR", "CANCEL"):
@@ -167,6 +178,13 @@ def _http2(ctx) -> list:
             for p, fr in goaway[:5]), packets=[p.no for p, _ in goaway[:20]], ts=goaway[0][0].ts, count=len(goaway),
             severity="high" if any(fr["error"] in ("PROTOCOL_ERROR", "INTERNAL_ERROR", "ENHANCE_YOUR_CALM", "COMPRESSION_ERROR")
                                    for _, fr in goaway) else "medium"))
+    bad = [t for t in txs if t.get("grpc_status")]
+    if bad:
+        F.append(make("grpc_errors", f"{len(bad)} gRPC call(s) failed: " + "; ".join(
+            f"{t['grpc']} → {GRPC_STATUS.get(t['grpc_status'], t['grpc_status'])}" + (f" ({t['grpc_message'][:60]})" if t["grpc_message"] else "")
+            for t in bad[:6]), packets=[t.get("grpc_no") or t["no"] for t in bad[:20]], ts=bad[0]["ts"], count=len(bad),
+            entities=sorted({t["server"] for t in bad})[:15],
+            severity="high" if any(t["grpc_status"] in (13, 14, 4) for t in bad) else None))
     if rst:
         F.append(make("http2_rst_stream", f"{len(rst)} HTTP/2 streams reset: " + ", ".join(
             sorted({fr["error"] for _, fr in rst})) + ".", packets=[p.no for p, _ in rst[:20]], ts=rst[0][0].ts, count=len(rst),

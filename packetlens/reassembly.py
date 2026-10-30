@@ -130,6 +130,8 @@ class Framer:
                     break
             if self.proto == "http":
                 self._after_http_header(msg)
+                if self.body is not None and self.buf:   # keep a body preview before the body is consumed below
+                    out[-1] = ("http", msg + bytes(self.buf[:200]), s, e)
         return out
 
     def _msg_len(self) -> int | None:
@@ -355,7 +357,7 @@ class Reassembler:
                 _label(end, "DNS", dns.info(m))
         elif kind == "http":
             hdr_pkt = end
-            m = http.parse(msg + bytes(d.framer.buf[:200]) if d.framer.body else msg)
+            m = http.parse(msg + bytes(d.framer.buf[:200]) if d.framer.body and msg.endswith(b"\r\n\r\n") else msg)
             if m:
                 hdr_pkt.layers["http"] = m
                 _label(hdr_pkt, "HTTP", http.info(m))
@@ -383,7 +385,7 @@ class Reassembler:
                 d.plain.peer, other.plain.peer = other.plain, d.plain
         for kind, msg, start, end in d.plain.feed(body, pkt):
             if kind == "http":
-                m = http.parse(msg + bytes(d.plain.buf[:200]) if d.plain.body else msg)
+                m = http.parse(msg + bytes(d.plain.buf[:200]) if d.plain.body and msg.endswith(b"\r\n\r\n") else msg)
                 if m:
                     m["tls"] = True
                     if m.get("url", "").startswith("http://"):

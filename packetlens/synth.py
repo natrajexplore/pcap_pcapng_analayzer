@@ -44,15 +44,15 @@ class Gen:
             hdr += struct.pack("!HH", 0x8100, vlan)
         self.frames.append((T0 + t, hdr + struct.pack("!H", etype) + payload))
 
-    def ipv4(self, t, smac, dmac, src, dst, proto, payload, ttl=64, df=True, ident=None):
+    def ipv4(self, t, smac, dmac, src, dst, proto, payload, ttl=64, df=True, ident=None, tos=0):
         self._ipid = (self._ipid + 1) & 0xFFFF
-        hdr = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(payload), ident if ident is not None else self._ipid,
+        hdr = struct.pack("!BBHHHBBH4s4s", 0x45, tos, 20 + len(payload), ident if ident is not None else self._ipid,
                           0x4000 if df else 0, ttl, proto, 0, _ip(src), _ip(dst))
         hdr = hdr[:10] + struct.pack("!H", _cks(hdr)) + hdr[12:]
         self.eth(t, smac, dmac, 0x0800, hdr + payload)
 
-    def udp(self, t, smac, dmac, src, dst, sport, dport, payload, ttl=64):
-        self.ipv4(t, smac, dmac, src, dst, 17, struct.pack("!HHHH", sport, dport, 8 + len(payload), 0) + payload, ttl=ttl)
+    def udp(self, t, smac, dmac, src, dst, sport, dport, payload, ttl=64, tos=0):
+        self.ipv4(t, smac, dmac, src, dst, 17, struct.pack("!HHHH", sport, dport, 8 + len(payload), 0) + payload, ttl=ttl, tos=tos)
 
     def tcp_raw(self, t, smac, dmac, src, dst, sport, dport, seq, ack, flags, win, payload=b"", opts=b"", ttl=64):
         opts += b"\x00" * ((4 - len(opts) % 4) % 4)
@@ -687,9 +687,10 @@ def build_tls_decryptable(g: "Gen", t0: float = 320.0) -> str:
 
 
 def write_demo(path: str, fmt: str = "pcapng") -> int:
-    from . import synth_crypto
+    from . import synth_ai, synth_crypto
     g = build_demo()
     build_extended(g)
     synth_crypto.build_all(g)
+    synth_ai.build_all(g)
     keylog = build_tls_decryptable(g)        # keys embedded in the pcapng (Decryption Secrets Block)
     return g.save(path, fmt, keylog=keylog or None)

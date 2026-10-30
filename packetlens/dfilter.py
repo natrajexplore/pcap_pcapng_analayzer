@@ -87,6 +87,7 @@ FIELDS = {
     "ip.flags.mf": lambda p, raw: [int(p.ip_mf)] if _v4(p) else [],
     "ip.frag_offset": lambda p, raw: [p.ip_frag_offset] if _v4(p) else [],
     "ip.dsfield.dscp": lambda p, raw: [p.dscp] if p.ip_version else [],
+    "ip.dsfield.ecn": lambda p, raw: [p.ecn] if p.ip_version else [],
     "ip.checksum.status": lambda p, raw: [{True: "good", False: "bad", None: "unverified"}[p.ip_checksum_ok]] if _v4(p) else [],
     "ipv6.src": lambda p, raw: _ip_list(p.src) if _v6(p) else [],
     "ipv6.dst": lambda p, raw: _ip_list(p.dst) if _v6(p) else [],
@@ -131,7 +132,8 @@ FIELDS = {
     "http.user_agent": _layer("http", "user_agent"), "http.response.code": _layer("http", "status"),
     "http.content_type": _layer("http", "content_type"),
     "tls.handshake.type": lambda p, raw: p.layers["tls"].get("handshakes", []) if "tls" in p.layers else [],
-    "tls.handshake.extensions_server_name": lambda p, raw: _ip_list((p.layers.get("tls", {}).get("client_hello") or {}).get("sni")),
+    "tls.handshake.extensions_server_name": lambda p, raw: _ip_list((p.layers.get("tls", {}).get("client_hello") or {}).get("sni"),
+                                                                    (p.layers.get("quic") or {}).get("sni")),
     "tls.handshake.ja3": lambda p, raw: _ip_list((p.layers.get("tls", {}).get("client_hello") or {}).get("ja3")),
     "tls.record.content_type": lambda p, raw: [r["type"] for r in p.layers["tls"]["records"]] if "tls" in p.layers else [],
     "dhcp.option.dhcp": _layer("dhcp", "msg_type"), "dhcp.hw.mac_addr": _layer("dhcp", "chaddr"),
@@ -170,6 +172,15 @@ FIELDS = {
     "esp.sequence": lambda p, raw: [p.layers["esp"]["seq"]] if p.layers.get("esp", {}).get("kind") == "esp" else [],
     "macsec.an": _layer("macsec", "an"), "macsec.pn": _layer("macsec", "pn"), "macsec.sci": _layer("macsec", "sci"),
     "macsec.encrypted": lambda p, raw: [int(p.layers["macsec"]["encrypted"])] if "macsec" in p.layers else [],
+    "http.authorization": lambda p, raw: _ip_list((p.layers.get("http") or {}).get("headers", {}).get("authorization")),
+    "quic.version": _layer("quic", "version"), "quic.long.packet_type": _layer("quic", "type"),
+    "quic.dcid": _layer("quic", "dcid"), "quic.scid": _layer("quic", "scid"),
+    "wg.type": _layer("wireguard", "type_num"), "wg.sender": _layer("wireguard", "sender"),
+    "wg.receiver": _layer("wireguard", "receiver"), "wg.counter": _layer("wireguard", "counter"),
+    "infiniband.bth.opcode": _layer("roce", "opcode"), "infiniband.bth.psn": _layer("roce", "psn"),
+    "infiniband.bth.destqp": _layer("roce", "dest_qp"),
+    "infiniband.aeth.syndrome": lambda p, raw: [p.layers["roce"]["aeth"]["kind"]] if (p.layers.get("roce") or {}).get("aeth") else [],
+    "pfc.priority": lambda p, raw: [int(k) for k in (p.layers.get("pfc") or {}).get("priorities", {})],
     "eapol.type": lambda p, raw: [{"EAP-Packet": 0, "EAPOL-Start": 1, "EAPOL-Logoff": 2, "EAPOL-Key": 3, "EAPOL-MKA": 5}.get(
         p.layers["eapol"]["type"], -1)] if "eapol" in p.layers else [],
     "eap.type": lambda p, raw: [m for m in [{v: k for k, v in auth.EAP_METHODS.items()}.get(
@@ -194,10 +205,14 @@ PROTOCOLS = {
     "llc": lambda p: p.protocol == "LLC", "loop": lambda p: p.protocol == "LOOP",
 }
 for _l in ("arp", "dns", "http", "tls", "dhcp", "bgp", "ospf", "eigrp", "rip", "stp", "isis", "pim", "igmp", "gre", "vxlan",
-           "cdp", "dtp", "lldp", "eapol", "radius", "ssh", "macsec"):
+           "cdp", "dtp", "lldp", "eapol", "radius", "ssh", "macsec", "wireguard", "roce", "pfc"):
     PROTOCOLS[_l] = (lambda n: lambda p: n in p.layers)(_l)
 PROTOCOLS["hsrp"] = lambda p: p.protocol == "HSRP"
 PROTOCOLS["isakmp"] = lambda p: "ike" in p.layers
+PROTOCOLS["wg"] = PROTOCOLS["wireguard"]
+PROTOCOLS["infiniband"] = PROTOCOLS["roce"]
+PROTOCOLS["grpc"] = lambda p: any((f.get("headers") and dict(f["headers"]).get("content-type", "").startswith("application/grpc"))
+                                  for f in (p.layers.get("http2") or {}).get("frames", []))
 PROTOCOLS["esp"] = lambda p: p.layers.get("esp", {}).get("kind") == "esp"
 PROTOCOLS["mka"] = lambda p: bool((p.layers.get("eapol") or {}).get("mka"))
 PROTOCOLS["x509af"] = lambda p: bool(p.layers.get("tls", {}).get("certificates"))

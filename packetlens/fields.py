@@ -382,7 +382,8 @@ def _app_title(name, p):
               "dtp": "Dynamic Trunking Protocol", "lldp": "Link Layer Discovery Protocol", "pim": "Protocol Independent Multicast",
               "igmp": "Internet Group Management Protocol", "eapol": "802.1X Authentication", "radius": "RADIUS Protocol",
               "fhrp": "First Hop Redundancy Protocol", "ssh": "SSH Protocol", "ike": "Internet Security Association and Key Management Protocol",
-              "esp": "Encapsulating Security Payload", "macsec": "IEEE 802.1AE MACsec"}
+              "esp": "Encapsulating Security Payload", "macsec": "IEEE 802.1AE MACsec", "quic": "QUIC IETF",
+              "wireguard": "WireGuard Protocol", "roce": "InfiniBand (RoCEv2)", "pfc": "MAC Control (Priority Flow Control)"}
     return f"{titles.get(name, name.upper())} — {p.info[:100]}"
 
 

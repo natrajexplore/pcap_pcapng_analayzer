@@ -45,6 +45,13 @@ def text_report(a, color: bool = True, verbose: bool = False, width: int = 100) 
         w(f"  PQC readiness: {rd['score']}/100 · {rd['quantum_safe']} quantum-safe, {c.get('draft', 0)} draft, "
           f"{c.get('classical', 0)} classical, {c.get('weak', 0)} weak key exchange(s) · "
           + ", ".join(f"{p} {sum(v.values())}" for p, v in rd["by_protocol"].items()))
+    if (a.ai or {}).get("providers"):
+        w("  AI services: " + ", ".join(f"{p['provider']} ({len(p['clients'])} client{'s' if len(p['clients']) != 1 else ''})"
+                                         for p in a.ai["providers"][:8]))
+    fb = a.fabric or {}
+    if fb.get("qps") or fb.get("pfc"):
+        w(f"  AI fabric: {len(fb['qps'])} RoCEv2 queue pair(s), {sum(q['gaps'] for q in fb['qps'])} missing PSN(s), "
+          f"{sum(q['cnps'] for q in fb['qps'])} CNP(s), {sum(s['frames'] for s in fb['pfc'])} PFC/PAUSE frame(s)")
     for warn in a.warnings:
         w(_c(f"  ! {warn}", COL["medium"], color))
     w()
